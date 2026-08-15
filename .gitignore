@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Local runtime data and credentials
+.env
+.env.*
+!.env.example
+data/
+/.engintel-data/
+/reports/
+# Ad-hoc evidence reports created in the repository root.
+/github-ibr-contributions-*.md
+/backups/
+exports/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

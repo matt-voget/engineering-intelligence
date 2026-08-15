@@ -1,0 +1,4 @@
+interface:
+  display_name: "Engineering Status Report"
+  short_description: "Refresh sources and build one current HTML report"
+  default_prompt: "Use $team-status-prep to refresh and deduplicate Jira and GitHub, then generate one self-contained team and individual HTML report."

@@ -1,0 +1,29 @@
+schema_version: "1"
+jira:
+  base_url: https://CHANGE_ME.atlassian.net
+  email_env: ATLAS_ATLASSIAN_EMAIL
+  token_env: JIRA_API_TOKEN
+  # Set these only when your Jira instance uses the corresponding custom fields.
+  team_field_id: null
+  target_date_field_id: null
+  gravitee_customers_field_id: null
+  hierarchy_max_depth: 10
+  hierarchy_batch_size: 40
+  collect_accountable_work: true
+  boards:
+    # The portfolio board supplies the high-level workflow shown in the report.
+    - id: 123
+      name: CHANGE_ME Portfolio board
+      role: portfolio
+      url: https://CHANGE_ME.atlassian.net/jira/software/c/projects/CHANGE_ME/boards/123
+  # Add read-only JQL scopes needed beyond the configured boards. IDs must be stable.
+  queries: []
+github:
+  api_url: https://api.github.com
+  token_env: GITHUB_PAT
+  initial_lookback_days: 90
+  max_pull_requests_per_repository: 500
+  min_refresh_window_days: 31
+  repositories:
+    - full_name: CHANGE_ME/CHANGE_ME
+      team_ids: [example-team]

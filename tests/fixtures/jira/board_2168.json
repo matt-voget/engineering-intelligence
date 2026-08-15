@@ -1,0 +1,14 @@
+{
+  "id": 2168,
+  "name": "IBR board",
+  "type": "kanban",
+  "filter": {"id": "15202"},
+  "ranking": {"rankCustomFieldId": 10019},
+  "columnConfig": {
+    "columns": [
+      {"name": "Ready for Build", "statuses": [{"id": "10994"}, {"id": "10000"}]},
+      {"name": "In Progress", "statuses": [{"id": "3"}]},
+      {"name": "Done", "statuses": [{"id": "10001"}]}
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "100002",
+  "key": "IDN-2",
+  "self": "https://gravitee.atlassian.net/rest/api/3/issue/100002",
+  "fields": {
+    "summary": "Implement the team health projection",
+    "issuetype": {"id": "10001", "name": "Story"},
+    "status": {
+      "id": "3",
+      "name": "In Progress",
+      "statusCategory": {"key": "indeterminate", "name": "In Progress"}
+    },
+    "assignee": {"accountId": "person-2", "displayName": "Alex Kim"},
+    "project": {"key": "IDN"},
+    "created": "2026-07-02T10:00:00.000+0000",
+    "updated": "2026-07-28T15:30:00.000+0000",
+    "resolutiondate": null,
+    "parent": {"id": "100001", "key": "IDN-1"},
+    "subtasks": [{"id": "100003", "key": "IDN-3"}],
+    "issuelinks": [],
+    "labels": [],
+    "components": [],
+    "fixVersions": [],
+    "customfield_10019": "0|i00001:",
+    "customfield_12345": {"id": "team-a2a", "title": "A2A"},
+    "customfield_54321": null
+  }
+}

@@ -1,0 +1,22 @@
+schema_version: "1"
+teams:
+  - id: example-team
+    name: CHANGE_ME Team
+    aliases: []
+    members:
+      - id: example-engineer
+        name: CHANGE_ME Engineer
+        preferred_name: null
+        role: Engineer
+        jira_account_id: CHANGE_ME
+        github_login: CHANGE_ME
+        # Use the first date on which this membership is known to be valid.
+        starts_on: 2026-01-01
+        active: true
+    roster_source:
+      state: configured
+      source: CHANGE_ME
+      observed_on: 2026-01-01
+      starts_on_basis: first_verified_observation
+      notes:
+        - Replace this starter roster with explicit, verified identity mappings.

@@ -1,0 +1,47 @@
+{
+  "id": "100001",
+  "key": "IDN-1",
+  "self": "https://gravitee.atlassian.net/rest/api/3/issue/100001",
+  "fields": {
+    "summary": "Ship agent-ready team dashboard",
+    "description": {
+      "type": "doc",
+      "version": 1,
+      "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Build an evidence-linked dashboard for engineering leaders."}]},
+        {"type": "bulletList", "content": [
+          {"type": "listItem", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Show team health and active delivery work."}]}]}
+        ]}
+      ]
+    },
+    "issuetype": {"id": "10000", "name": "Epic"},
+    "status": {
+      "id": "3",
+      "name": "In Progress",
+      "statusCategory": {"key": "indeterminate", "name": "In Progress"}
+    },
+    "assignee": {"accountId": "person-1", "displayName": "Jordan Lee"},
+    "project": {"key": "IDN"},
+    "created": "2026-07-01T10:00:00.000+0000",
+    "updated": "2026-07-28T15:00:00.000+0000",
+    "resolutiondate": null,
+    "parent": null,
+    "subtasks": [{"id": "100002", "key": "IDN-2"}],
+    "issuelinks": [
+      {
+        "type": {"name": "Blocks", "outward": "blocks", "inward": "is blocked by"},
+        "outwardIssue": {"id": "200001", "key": "BX-10"}
+      }
+    ],
+    "labels": ["agent-native"],
+    "components": [{"id": "11", "name": "Platform"}],
+    "fixVersions": [{"id": "21", "name": "2026.08", "released": false}],
+    "customfield_10019": "0|i00000:",
+    "customfield_12345": {"id": "team-a2a", "title": "A2A"},
+    "customfield_54321": "2026-08-15",
+    "customfield_10607": [
+      {"id": "customer-1", "value": "Acme Corp"},
+      {"id": "customer-2", "value": "Globex"}
+    ]
+  }
+}
