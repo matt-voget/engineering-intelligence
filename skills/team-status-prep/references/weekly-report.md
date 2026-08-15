@@ -8,7 +8,7 @@ identity, and team ordering. Run the complete refresh first and require a receip
 every configured GitHub repository run. A failed or missing configured source blocks
 rendering. The normalized store is the deduplication boundary; never merge raw exports.
 
-The Jira board whose configured role is `portfolio` supplies the report workflow. If
+The Jira board whose configured role is `ibr` (the IBR board; `portfolio` is a legacy alias) supplies the report workflow. If
 none has that role, the first configured board is used. Named queries and repositories
 extend coverage but do not imply ownership beyond their explicit configuration.
 

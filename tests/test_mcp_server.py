@@ -72,7 +72,7 @@ def populated_runtime(tmp_path: Path) -> Path:
     }]})
     sources = SourceConfig.model_validate({
         "jira": {"base_url": "https://gravitee.atlassian.net", "boards": [
-            {"id": 2168, "name": "Portfolio", "role": "portfolio"}
+            {"id": 2168, "name": "IBR", "role": "ibr"}
         ]}
     })
     SnapshotService(sessions).create(

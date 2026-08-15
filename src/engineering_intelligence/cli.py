@@ -158,8 +158,13 @@ def setup(
         "teams_config": str(teams_target),
         "data_dir": str(data_root),
         "next": [
-            "Edit both YAML files and replace every CHANGE_ME value.",
             "Export the Jira and GitHub credential variables named in sources.yaml.",
+            (
+                "Set jira.base_url, then let an agent run the guided onboarding in "
+                "docs/onboarding.md to discover boards, custom fields, repositories, "
+                "and team rosters — or edit both YAML files by hand, replacing every "
+                "CHANGE_ME value."
+            ),
             "Run engintel install with these config paths, then invoke team-status-prep.",
         ],
     }, indent=2))

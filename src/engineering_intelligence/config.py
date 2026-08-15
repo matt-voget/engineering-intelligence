@@ -5,9 +5,13 @@ from pathlib import Path
 from typing import TypeVar
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+IBR_BOARD_ROLE = "ibr"
+# Accepted for configurations and pinned snapshots written before the rename.
+LEGACY_IBR_BOARD_ROLE = "portfolio"
 
 
 class JiraBoardConfig(BaseModel):
@@ -17,6 +21,13 @@ class JiraBoardConfig(BaseModel):
     name: str
     role: str = "team"
     url: HttpUrl | None = None
+
+    @field_validator("role")
+    @classmethod
+    def _normalize_role(cls, value: str) -> str:
+        if value == LEGACY_IBR_BOARD_ROLE:
+            return IBR_BOARD_ROLE
+        return value
 
 
 class JiraQueryConfig(BaseModel):
@@ -56,7 +67,7 @@ class GitHubRepositoryConfig(BaseModel):
 class GitHubConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    api_url: HttpUrl = "https://api.github.com"
+    api_url: HttpUrl = HttpUrl("https://api.github.com")
     token_env: str = "GITHUB_PAT"
     initial_lookback_days: int = Field(default=90, ge=1, le=3650)
     max_pull_requests_per_repository: int = Field(default=500, ge=1, le=5000)

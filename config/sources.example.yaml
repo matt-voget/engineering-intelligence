@@ -1,9 +1,13 @@
 schema_version: "1"
 jira:
+  # The only values a user must supply by hand are base_url and credentials.
+  # Everything below marked "agent-discovered" is filled in by the guided
+  # onboarding flow in docs/onboarding.md after the Jira connection works.
   base_url: https://CHANGE_ME.atlassian.net
   email_env: ATLAS_ATLASSIAN_EMAIL
   token_env: JIRA_API_TOKEN
-  # Set these only when your Jira instance uses the corresponding custom fields.
+  # Agent-discovered: custom-field IDs are looked up from /rest/api/3/field and
+  # verified against real issues before being set. Leave null until verified.
   team_field_id: null
   target_date_field_id: null
   gravitee_customers_field_id: null
@@ -11,10 +15,14 @@ jira:
   hierarchy_batch_size: 40
   collect_accountable_work: true
   boards:
-    # The portfolio board supplies the high-level workflow shown in the report.
+    # Exactly one board must have role: ibr. The IBR board defines which
+    # tickets are in scope versus out of scope from an IBR perspective and
+    # supplies the high-level workflow shown in the report. The onboarding flow
+    # lists the instance's boards and asks the user to pick the IBR board.
+    # (role: portfolio is accepted as a legacy alias for ibr.)
     - id: 123
-      name: CHANGE_ME Portfolio board
-      role: portfolio
+      name: CHANGE_ME IBR board
+      role: ibr
       url: https://CHANGE_ME.atlassian.net/jira/software/c/projects/CHANGE_ME/boards/123
   # Add read-only JQL scopes needed beyond the configured boards. IDs must be stable.
   queries: []
@@ -24,6 +32,8 @@ github:
   initial_lookback_days: 90
   max_pull_requests_per_repository: 500
   min_refresh_window_days: 31
+  # Agent-discovered: the onboarding flow enumerates the token's organizations
+  # and recently active repositories and proposes this list for confirmation.
   repositories:
     - full_name: CHANGE_ME/CHANGE_ME
       team_ids: [example-team]

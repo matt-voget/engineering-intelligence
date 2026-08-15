@@ -61,7 +61,7 @@ def _source_config() -> SourceConfig:
                 "email": "fixture@example.com",
                 "token_env": "FIXTURE_JIRA_TOKEN",
                 "team_field_id": "customfield_12345",
-                "boards": [{"id": 2168, "name": "IBR", "role": "portfolio"}],
+                "boards": [{"id": 2168, "name": "IBR", "role": "portfolio"}],  # legacy alias for ibr
             },
             "github": {
                 "api_url": "https://api.github.com",

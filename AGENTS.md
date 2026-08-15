@@ -33,9 +33,12 @@ If setup is missing or incomplete:
 2. Run `uv sync --all-groups`.
 3. Run `uv run engintel setup`. This creates private starter YAML and initializes the
    database outside the clone by default.
-4. Guide the user through replacing every `CHANGE_ME` value in `sources.yaml` and
-   `teams.yaml`. Do not guess Jira board IDs, custom-field IDs, JQL, repository scope,
-   identities, or roster membership.
+4. Run the agent-led onboarding in `docs/onboarding.md`: the user supplies only the
+   Jira base URL, credentials, the IBR board choice, and their team names; the agent
+   discovers boards, custom-field IDs, the GitHub organization and repositories, and
+   team rosters with cross-verified GitHub identities, then proposes the complete
+   configuration for confirmation. Never write a discovered value the user has not
+   confirmed, and never guess anything discovery cannot verify.
 5. Ask the user to provide credentials through environment variables or a supported
    credential store. Never ask the user to paste credential values into chat. Explain
    that credentials exported after the current agent process started will not update
@@ -81,8 +84,9 @@ promote a new clone:
 ## Configuration rules
 
 - Keep organization-specific configuration outside the clone.
-- Give exactly one Jira board the `portfolio` role; setup validation rejects zero or
-  multiple portfolio boards.
+- Give exactly one Jira board the `ibr` role. The IBR board defines which tickets are
+  in scope versus out of scope from an IBR perspective; `portfolio` is accepted as a
+  legacy alias and normalizes to `ibr`.
 - Use stable lowercase IDs for teams and people. Preserve IDs across display-name
   changes and represent secondary membership with the same person ID in multiple teams.
 - Repository `team_ids` must refer to configured team IDs. Shared repositories may map
@@ -156,6 +160,7 @@ unrelated untracked artifacts.
 ## Primary references
 
 - `README.md`: clone-to-first-report onboarding and user-facing operations
+- `docs/onboarding.md`: agent-led discovery flow for first-time configuration
 - `config/*.example.yaml`: deliberately nonfunctional configuration templates
 - `skills/team-status-prep/`: current report skill, report contract, and renderer
 - `src/engineering_intelligence/refresh/`: complete refresh orchestration and receipts

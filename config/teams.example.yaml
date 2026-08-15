@@ -1,4 +1,8 @@
 schema_version: "1"
+# A user only needs to supply team names that match Jira team names. The guided
+# onboarding flow in docs/onboarding.md discovers each team's members from Jira,
+# cross-verifies their GitHub logins against repository activity, and proposes
+# this file's contents for confirmation before writing it.
 teams:
   - id: example-team
     name: CHANGE_ME Team
@@ -8,7 +12,10 @@ teams:
         name: CHANGE_ME Engineer
         preferred_name: null
         role: Engineer
+        # Agent-discovered from Jira team membership and issue assignments.
         jira_account_id: CHANGE_ME
+        # Agent-discovered by cross-matching repository activity; must be
+        # confirmed by the user before it is treated as an identity mapping.
         github_login: CHANGE_ME
         # Use the first date on which this membership is known to be valid.
         starts_on: 2026-01-01

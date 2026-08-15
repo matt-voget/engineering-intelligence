@@ -63,7 +63,7 @@ def test_named_snapshot_dashboard_is_reproducible(tmp_path: Path) -> None:
     }]})
     sources = SourceConfig.model_validate({
         "jira": {"base_url": "https://gravitee.atlassian.net", "boards": [
-            {"id": 2168, "name": "Portfolio", "role": "portfolio"}
+            {"id": 2168, "name": "IBR", "role": "ibr"}
         ]}
     })
     snapshot = SnapshotService(sessions).create(

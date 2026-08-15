@@ -3,7 +3,12 @@
 import hashlib
 import json
 
-from engineering_intelligence.config import GitHubConfig, SourceConfig, TeamsConfig
+from engineering_intelligence.config import (
+    IBR_BOARD_ROLE,
+    GitHubConfig,
+    SourceConfig,
+    TeamsConfig,
+)
 from engineering_intelligence.persistence.models import Snapshot
 
 
@@ -52,10 +57,17 @@ def github_config_for_snapshot(
     return SourceConfig.model_validate(snapshot.source_config).github
 
 
-def portfolio_board_id_for_snapshot(snapshot: Snapshot, fallback: int = 2168) -> int:
-    """Resolve the report's portfolio board from pinned source configuration."""
+def ibr_board_id_for_snapshot(snapshot: Snapshot) -> int | None:
+    """Resolve the report's IBR board from pinned source configuration.
+
+    The IBR board defines which tickets are in scope versus out of scope from an
+    IBR perspective. Legacy pinned configurations using the ``portfolio`` role
+    are normalized to ``ibr`` by the configuration model. Returns ``None`` when
+    the snapshot predates pinned source configuration, so callers fall through
+    to their explicit missing-IBR-board handling instead of guessing a board.
+    """
     if snapshot.source_config is None:
-        return fallback
+        return None
     boards = SourceConfig.model_validate(snapshot.source_config).jira.boards
-    portfolio = next((board for board in boards if board.role == "portfolio"), None)
-    return (portfolio or boards[0]).id
+    ibr = next((board for board in boards if board.role == IBR_BOARD_ROLE), None)
+    return (ibr or boards[0]).id
