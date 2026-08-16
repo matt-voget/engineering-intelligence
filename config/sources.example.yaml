@@ -24,7 +24,10 @@ jira:
       name: CHANGE_ME IBR board
       role: ibr
       url: https://CHANGE_ME.atlassian.net/jira/software/c/projects/CHANGE_ME/boards/123
-  # Add read-only JQL scopes needed beyond the configured boards. IDs must be stable.
+  # Add read-only JQL scopes needed beyond the configured boards. IDs must be
+  # stable. The IBR-versus-non-IBR work view requires one query per team with
+  # the exact id team-field-<team-id>; the guided onboarding derives these in
+  # docs/onboarding.md step 6. Leaving them out renders that view empty.
   queries: []
 github:
   api_url: https://api.github.com
