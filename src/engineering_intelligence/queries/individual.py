@@ -38,8 +38,8 @@ from engineering_intelligence.presentations.people import (
 )
 from engineering_intelligence.queries.feature import FeatureQuery
 from engineering_intelligence.snapshots.organization import (
+    ibr_board_id_for_snapshot,
     organization_config_for_snapshot,
-    portfolio_board_id_for_snapshot,
 )
 
 
@@ -70,10 +70,10 @@ class IndividualQuery:
                 .where(SnapshotSourceState.snapshot_id == snapshot.id)
                 .order_by(SnapshotSourceState.source, SnapshotSourceState.scope)
             ).all()
-            portfolio_scope = f"board:{portfolio_board_id_for_snapshot(snapshot)}"
-            ibr_state = next((state for state in states if state.scope == portfolio_scope), None)
+            ibr_scope = f"board:{ibr_board_id_for_snapshot(snapshot)}"
+            ibr_state = next((state for state in states if state.scope == ibr_scope), None)
             if ibr_state is None or ibr_state.ingestion_run_id is None:
-                raise ValueError("Snapshot has no configured portfolio board source")
+                raise ValueError("Snapshot has no configured IBR board source")
             accountable_state = next(
                 (state for state in states if state.scope == "query:accountable-active-work"),
                 None,

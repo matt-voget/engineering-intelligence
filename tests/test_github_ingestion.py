@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from engineering_intelligence.config import TeamsConfig
+from engineering_intelligence.config import SourceConfig, TeamsConfig
 from engineering_intelligence.ingestion.archive import RawPayloadArchive
 from engineering_intelligence.ingestion.github.service import GitHubIngestionService
 from engineering_intelligence.ingestion.jira.service import JiraIngestionService
@@ -32,6 +32,13 @@ from engineering_intelligence.renderers.people_markdown import (
     render_people_markdown,
 )
 from engineering_intelligence.snapshots import SnapshotService
+
+IBR_SOURCES = SourceConfig.model_validate({
+    "jira": {"base_url": "https://gravitee.atlassian.net", "boards": [
+        {"id": 2168, "name": "IBR", "role": "ibr"}
+    ]}
+})
+
 
 FIXTURES = Path(__file__).parent / "fixtures/jira"
 
@@ -272,6 +279,7 @@ def test_github_ingestion_is_idempotent_and_links_explicit_jira_keys(
         github_repositories=["gravitee-io/example"],
         name="github-attribution",
         created_at=later,
+        source_config=IBR_SOURCES,
     )
     feature = FeatureQuery(sessions).get("github-attribution", "IDN-1")
 

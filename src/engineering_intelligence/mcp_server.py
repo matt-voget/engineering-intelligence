@@ -239,7 +239,7 @@ def create_server(
         annotations=READ_ONLY_TOOL,
         description=(
             "Deterministically return hierarchy-aware detail for one Jira issue observed "
-            "on the configured portfolio board in a required saved snapshot. Includes at most "
+            "on the configured IBR board in a required saved snapshot. Includes at most "
             f"{MAX_FEATURE_NODES} hierarchy nodes, source freshness, contributors, Jira "
             "links, timeline, and data-quality notes. It is read-only and has no side effects."
         ),

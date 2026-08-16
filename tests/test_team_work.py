@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from engineering_intelligence.config import TeamsConfig
+from engineering_intelligence.config import SourceConfig, TeamsConfig
 from engineering_intelligence.ingestion.archive import RawPayloadArchive
 from engineering_intelligence.ingestion.github.service import GitHubIngestionService
 from engineering_intelligence.ingestion.jira.service import JiraIngestionService
@@ -14,6 +14,13 @@ from engineering_intelligence.persistence.database import (
 )
 from engineering_intelligence.queries.team_work import TeamWorkQuery
 from engineering_intelligence.snapshots import SnapshotService
+
+IBR_SOURCES = SourceConfig.model_validate({
+    "jira": {"base_url": "https://gravitee.atlassian.net", "boards": [
+        {"id": 2168, "name": "IBR", "role": "ibr"}
+    ]}
+})
+
 
 FIXTURES = Path(__file__).parent / "fixtures/jira"
 
@@ -163,6 +170,7 @@ def test_team_work_classifies_jira_and_github_records(tmp_path: Path) -> None:
         github_repositories=["gravitee-io/example"],
         name="work-fixture",
         created_at=observed_at,
+        source_config=IBR_SOURCES,
     )
     teams = TeamsConfig.model_validate(
         {
@@ -257,7 +265,8 @@ def test_team_work_reports_missing_scope_as_unavailable(tmp_path: Path) -> None:
         target_date_field_id="customfield_54321",
     ).ingest_board(2168, observed_at=observed_at)
     SnapshotService(sessions).create(
-        [2168], name="no-query-fixture", created_at=observed_at
+        [2168], name="no-query-fixture", created_at=observed_at,
+        source_config=IBR_SOURCES,
     )
     teams = TeamsConfig.model_validate(
         {"teams": [{"id": "a2a", "name": "A2A", "members": []}]}

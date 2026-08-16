@@ -20,8 +20,8 @@ from engineering_intelligence.queries.dashboard import DashboardQuery
 from engineering_intelligence.queries.feature import FeatureQuery
 from engineering_intelligence.queries.metrics import MetricsQuery
 from engineering_intelligence.snapshots.organization import (
+    ibr_board_id_for_snapshot,
     organization_config_for_snapshot,
-    portfolio_board_id_for_snapshot,
 )
 
 WORKFLOW_COLUMNS = [
@@ -64,7 +64,7 @@ class TeamQuery:
         with self.sessions() as session:
             snapshot = self.dashboard_query._snapshot(session, snapshot_identifier)
             teams_config = organization_config_for_snapshot(snapshot, teams_config)
-            portfolio_scope = f"board:{portfolio_board_id_for_snapshot(snapshot)}"
+            ibr_scope = f"board:{ibr_board_id_for_snapshot(snapshot)}"
         team = _team_config(teams_config, team_identifier)
         dashboard = FlagService(self.sessions).record_dashboard(
             self.dashboard_query.get(snapshot_identifier, teams_config)
@@ -76,16 +76,16 @@ class TeamQuery:
                 (
                     state
                     for state in dashboard.source_freshness
-                    if state.scope == portfolio_scope
+                    if state.scope == ibr_scope
                 ),
                 None,
             )
             if ibr_state is None:
-                raise ValueError("Snapshot has no configured portfolio board source")
+                raise ValueError("Snapshot has no configured IBR board source")
             source_state = session.scalar(
                 select(SnapshotSourceState).where(
                     SnapshotSourceState.snapshot_id == snapshot.id,
-                    SnapshotSourceState.scope == portfolio_scope,
+                    SnapshotSourceState.scope == ibr_scope,
                 )
             )
             assert source_state is not None
@@ -133,7 +133,7 @@ class TeamQuery:
         if not github_available:
             data_quality.append("This snapshot has no configured GitHub source state.")
         data_quality.append(
-            "Workflow reflects high-level items observed directly on the configured portfolio board."
+            "Workflow reflects high-level items observed directly on the configured IBR board."
         )
         metrics = MetricsQuery(self.sessions).get(
             snapshot_identifier,

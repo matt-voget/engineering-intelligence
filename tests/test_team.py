@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from engineering_intelligence.config import TeamsConfig
+from engineering_intelligence.config import SourceConfig, TeamsConfig
 from engineering_intelligence.ingestion.archive import RawPayloadArchive
 from engineering_intelligence.ingestion.jira.service import JiraIngestionService
 from engineering_intelligence.persistence.database import (
@@ -21,6 +21,13 @@ from engineering_intelligence.renderers.team_brief_markdown import (
 )
 from engineering_intelligence.renderers.team_markdown import render_team_markdown
 from engineering_intelligence.snapshots import SnapshotService
+
+IBR_SOURCES = SourceConfig.model_validate({
+    "jira": {"base_url": "https://gravitee.atlassian.net", "boards": [
+        {"id": 2168, "name": "IBR", "role": "ibr"}
+    ]}
+})
+
 
 FIXTURES = Path(__file__).parent / "fixtures/jira"
 
@@ -66,6 +73,7 @@ def test_team_detail_preserves_complete_workflow_and_roster(tmp_path: Path) -> N
         [2168],
         name="team-fixture",
         created_at=observed_at,
+        source_config=IBR_SOURCES,
     )
     teams = TeamsConfig.model_validate(
         {

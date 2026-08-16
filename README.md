@@ -55,10 +55,15 @@ setup safely, and guide me through every value you cannot determine without gues
 Never display or store credential values.
 ```
 
-Claude will create private starter configuration outside the clone, guide you through
-the Jira, GitHub, team, and engineer mappings, validate them, and run
-`engintel install --agent claude-code`. Restart Claude Code once after installation so
-the newly registered MCP server and report skill are available. Then ask:
+Claude will create private starter configuration outside the clone and run the
+agent-led onboarding in [`docs/onboarding.md`](docs/onboarding.md): you supply only
+your Jira URL and credentials, pick your IBR board from a discovered list, and name
+your teams — the agent discovers the custom fields, GitHub organization and
+repositories, and team rosters (cross-verifying each member's GitHub username), then
+proposes the complete configuration for your confirmation before writing it. It then
+validates the result and runs `engintel install --agent claude-code`. Restart Claude
+Code once after installation so the newly registered MCP server and report skill are
+available. Then ask:
 
 ```text
 Use $team-status-prep to generate my current engineering status report.
@@ -90,9 +95,12 @@ uv run engintel setup \
 ~/.local/share/engineering-intelligence/engineering-intelligence.db
 ```
 
-Edit both YAML files and replace every `CHANGE_ME` value. The source file defines:
+Edit both YAML files and replace every `CHANGE_ME` value (or let an agent discover
+and propose them via [`docs/onboarding.md`](docs/onboarding.md)). The source file
+defines:
 
-- Jira URL, portfolio/team boards, optional JQL scopes, and optional custom fields
+- Jira URL, the IBR board and other boards, optional JQL scopes, and optional custom
+  fields
 - GitHub repositories and their explicit team mappings
 - Environment-variable names used for credentials
 
@@ -175,14 +183,15 @@ end to end without touching a live installation, its data, or its schedule.
 
 ## Configuration conventions
 
-- Give exactly one Jira board the `portfolio` role. Installation and refresh reject
-  missing or duplicate portfolio roles.
+- Give exactly one Jira board the `ibr` role. The IBR board defines which tickets are
+  in scope versus out of scope from an IBR perspective (`portfolio` is accepted as a
+  legacy alias). Installation and refresh reject missing or duplicate IBR boards.
 - Use stable lowercase IDs for teams and people. Do not reuse IDs after renames.
 - Repository `team_ids` must refer to explicit team IDs in `teams.yaml`; shared repos
   may list multiple teams.
 - If team-wide Jira classification is desired, add a named query with ID
   `team-field-TEAM_ID`. Empty or absent optional classification scopes do not change
-  the portfolio workflow.
+  the IBR workflow.
 - Set optional Jira custom-field IDs only after verifying them in your Jira instance.
 - Tokens stay in environment variables. They are never written to YAML, SQLite,
   snapshots, reports, or installation manifests.

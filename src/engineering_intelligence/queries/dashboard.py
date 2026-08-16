@@ -37,8 +37,8 @@ from engineering_intelligence.presentations.dashboard import (
 )
 from engineering_intelligence.snapshots.organization import (
     github_config_for_snapshot,
+    ibr_board_id_for_snapshot,
     organization_config_for_snapshot,
-    portfolio_board_id_for_snapshot,
 )
 
 MAXIMUM_IBR_SOURCE_AGE = timedelta(hours=24)
@@ -79,7 +79,7 @@ class DashboardQuery:
     ) -> Dashboard:
         with self.sessions() as session:
             snapshot = self._snapshot(session, snapshot_identifier)
-            ibr_board_id = ibr_board_id or portfolio_board_id_for_snapshot(snapshot)
+            ibr_board_id = ibr_board_id or ibr_board_id_for_snapshot(snapshot)
             teams_config = organization_config_for_snapshot(snapshot, teams_config)
             github_config = github_config_for_snapshot(snapshot, github_config)
             source_states = session.scalars(
@@ -1239,7 +1239,7 @@ class DashboardQuery:
         )
         evidence = [
             EvidenceLink(label=f"Open {team_name} work in Jira", url=team_query_url),
-            EvidenceLink(label="Open portfolio work in Jira", url=board_url),
+            EvidenceLink(label="Open IBR work in Jira", url=board_url),
         ]
         flags = []
         if not in_progress:

@@ -32,7 +32,7 @@ from engineering_intelligence.presentations.feature import (
     JiraLinkEvidence,
     PersonEvidence,
 )
-from engineering_intelligence.snapshots.organization import portfolio_board_id_for_snapshot
+from engineering_intelligence.snapshots.organization import ibr_board_id_for_snapshot
 
 
 class FeatureQuery:
@@ -49,7 +49,7 @@ class FeatureQuery:
     ) -> FeatureDetail:
         with self.sessions() as session:
             snapshot = _snapshot(session, snapshot_identifier)
-            ibr_board_id = ibr_board_id or portfolio_board_id_for_snapshot(snapshot)
+            ibr_board_id = ibr_board_id or ibr_board_id_for_snapshot(snapshot)
             states = session.scalars(
                 select(SnapshotSourceState)
                 .where(SnapshotSourceState.snapshot_id == snapshot.id)

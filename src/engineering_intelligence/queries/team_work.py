@@ -2,7 +2,7 @@
 
 The Jira population is the snapshot's ``query:team-field-<team.id>`` scope —
 every issue whose Jira Team field names the team. An issue is IBR-linked when
-it was observed on the configured portfolio board in the same snapshot, or when its parent
+it was observed on the configured IBR board in the same snapshot, or when its parent
 chain reaches such an item. GitHub records enter through explicit Jira-key
 links, through their pull request's links (commits and reviews inherit the
 pull request's keys as a derived association), or through a configured team
@@ -39,8 +39,8 @@ from engineering_intelligence.presentations.team_work import (
 from engineering_intelligence.queries.dashboard import DashboardQuery, _as_utc
 from engineering_intelligence.queries.team import _team_config
 from engineering_intelligence.snapshots.organization import (
+    ibr_board_id_for_snapshot,
     organization_config_for_snapshot,
-    portfolio_board_id_for_snapshot,
 )
 
 LIST_WINDOW_DAYS = 92
@@ -60,7 +60,7 @@ class TeamWorkQuery:
     ) -> TeamWorkClassification:
         with self.sessions() as session:
             snapshot = DashboardQuery._snapshot(session, snapshot_identifier)
-            portfolio_scope = f"board:{portfolio_board_id_for_snapshot(snapshot)}"
+            ibr_scope = f"board:{ibr_board_id_for_snapshot(snapshot)}"
             teams_config = organization_config_for_snapshot(snapshot, teams_config)
             team = _team_config(teams_config, team_identifier)
             states = session.scalars(
@@ -70,7 +70,7 @@ class TeamWorkQuery:
             ).all()
             scope = f"query:team-field-{team.id}"
             team_state = next((s for s in states if s.scope == scope), None)
-            board_state = next((s for s in states if s.scope == portfolio_scope), None)
+            board_state = next((s for s in states if s.scope == ibr_scope), None)
             snapshot_at = _as_utc(snapshot.created_at)
             notes: list[str] = []
 
@@ -86,7 +86,7 @@ class TeamWorkQuery:
                 )
             else:
                 notes.append(
-                    "This snapshot has no pinned portfolio-board state; no issue "
+                    "This snapshot has no pinned IBR-board state; no issue "
                     "can be classified as IBR-linked."
                 )
 

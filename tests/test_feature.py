@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from engineering_intelligence.config import SourceConfig
 from engineering_intelligence.ingestion.archive import RawPayloadArchive
 from engineering_intelligence.ingestion.jira.service import JiraIngestionService
 from engineering_intelligence.persistence.database import (
@@ -15,6 +16,13 @@ from engineering_intelligence.persistence.database import (
 from engineering_intelligence.queries.feature import FeatureQuery
 from engineering_intelligence.renderers.feature_markdown import render_feature_markdown
 from engineering_intelligence.snapshots import SnapshotService
+
+IBR_SOURCES = SourceConfig.model_validate({
+    "jira": {"base_url": "https://gravitee.atlassian.net", "boards": [
+        {"id": 2168, "name": "IBR", "role": "ibr"}
+    ]}
+})
+
 
 FIXTURES = Path(__file__).parent / "fixtures/jira"
 
@@ -68,6 +76,7 @@ def test_feature_query_renders_complete_snapshot_hierarchy(tmp_path: Path) -> No
         [2168],
         name="feature-fixture",
         created_at=observed_at,
+        source_config=IBR_SOURCES,
     )
 
     feature = FeatureQuery(sessions).get(snapshot.id, "IDN-1")
@@ -108,7 +117,9 @@ def test_non_ibr_issue_is_rejected(tmp_path: Path) -> None:
         HierarchyClient(),  # type: ignore[arg-type]
         base_url="https://gravitee.atlassian.net",
     ).ingest_board(2168, observed_at=observed_at)
-    SnapshotService(sessions).create([2168], name="feature-fixture")
+    SnapshotService(sessions).create(
+        [2168], name="feature-fixture", source_config=IBR_SOURCES
+    )
 
     with pytest.raises(ValueError, match="not an IBR item"):
         FeatureQuery(sessions).get("feature-fixture", "IDN-2")
@@ -131,6 +142,7 @@ def test_feature_uses_issue_version_valid_at_snapshot(tmp_path: Path) -> None:
         [2168],
         name="before-change",
         created_at=first_at,
+        source_config=IBR_SOURCES,
     )
     client.iter_board_issues = lambda *_args, **_kwargs: [
         {
@@ -148,6 +160,7 @@ def test_feature_uses_issue_version_valid_at_snapshot(tmp_path: Path) -> None:
         [2168],
         name="after-change",
         created_at=second_at,
+        source_config=IBR_SOURCES,
     )
 
     before = FeatureQuery(sessions).get("before-change", "IDN-1")
