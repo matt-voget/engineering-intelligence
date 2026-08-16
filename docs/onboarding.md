@@ -98,7 +98,24 @@ For each team name the user supplied:
 4. Map each confirmed repository to the team IDs whose members are active in it
    and confirm those mappings too.
 
-## Step 6 — Propose the final configuration
+## Step 6 — Derive per-team classification queries
+
+The IBR-versus-non-IBR work view reads a dedicated snapshot scope per team: a
+Jira query whose id is exactly `team-field-<team-id>`. Without these queries
+the report renders that view's Jira half empty, so derive one for every
+configured team instead of leaving `jira.queries` empty:
+
+- `id`: `team-field-<team-id>` (for example `team-field-devex`);
+- `jql`: the verified team field matched to the team, bounded by an update
+  window — for example `cf[10001] = "<team-uuid>" AND updated >= -92d`.
+
+When the team field is the Atlassian team type, JQL that matches the display
+name can silently return zero issues; match by the team's UUID, taken from the
+field values observed on real issues in step 3 or step 5. Run each query once
+and confirm it returns issues before writing it — a query that returns nothing
+for an active team is a configuration error, not a valid empty scope.
+
+## Step 7 — Propose the final configuration
 
 Present the complete picture in one place before writing anything:
 
@@ -106,6 +123,7 @@ Present the complete picture in one place before writing anything:
   Jira account IDs and GitHub usernames;
 - the IBR board and any additional boards with their roles;
 - the verified custom-field IDs;
+- the derived `team-field-<team-id>` classification queries;
 - the confirmed repository list with team mappings.
 
 On approval, write `sources.yaml` and `teams.yaml` (stable lowercase IDs;
