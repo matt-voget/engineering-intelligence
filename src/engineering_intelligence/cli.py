@@ -855,6 +855,13 @@ def team_work(
         typer.Option("--teams-config", exists=True, dir_okay=False),
     ] = Path("config/teams.example.yaml"),
     data_dir: DataDir = None,
+    all_jira: Annotated[
+        bool,
+        typer.Option(
+            "--all-jira",
+            help="Include every Jira issue pinned in the team's query scope.",
+        ),
+    ] = False,
 ) -> None:
     """Classify the team's pinned Jira and GitHub work as IBR-linked or not."""
     if output_format != "json":
@@ -863,7 +870,12 @@ def team_work(
     paths = runtime_paths(data_dir)
     upgrade_database(paths.database)
     sessions = session_factory(create_sqlite_engine(paths.database))
-    classification = TeamWorkQuery(sessions).get(snapshot, team_identifier, teams_config)
+    classification = TeamWorkQuery(sessions).get(
+        snapshot,
+        team_identifier,
+        teams_config,
+        include_all_jira=all_jira,
+    )
     typer.echo(classification.model_dump_json(indent=2))
 
 

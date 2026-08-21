@@ -1,7 +1,11 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from engineering_intelligence.queries.build_cycle import _cycle, _eligible_issue
+from engineering_intelligence.queries.build_cycle import (
+    _cycle,
+    _eligible_issue,
+    workflow_cycle_metrics,
+)
 
 
 def transition(at: datetime, from_status: str, to_status: str):
@@ -64,3 +68,43 @@ def test_non_ibr_accepts_all_issue_types_but_ibr_is_parent_only() -> None:
     assert _eligible_issue("ibr_linked", "Feature Request") is True
     assert _eligible_issue("ibr_linked", "FDI Request") is True
     assert _eligible_issue("ibr_linked", "Bug") is False
+
+
+def test_workflow_cycle_metrics_breaks_out_requested_phases() -> None:
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    result = workflow_cycle_metrics(
+        timeline(
+            transition(started, "To Do", "In Progress"),
+            transition(started + timedelta(days=2), "In Progress", "In Code Review"),
+            transition(started + timedelta(days=3), "In Code Review", "Ready for Test"),
+            transition(started + timedelta(days=4), "Ready for Test", "In Testing"),
+            transition(started + timedelta(days=5), "In Testing", "Ready for Docs"),
+            transition(started + timedelta(days=6), "Ready for Docs", "Done"),
+        ),
+        started + timedelta(days=10),
+    )
+
+    assert result is not None
+    assert result.total_days == 6.0
+    assert result.in_progress_days == 2.0
+    assert result.in_review_days == 1.0
+    assert result.in_test_days == 2.0
+    assert result.skipped_phases == []
+
+
+def test_workflow_cycle_metrics_is_running_and_identifies_skipped_steps() -> None:
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    result = workflow_cycle_metrics(
+        timeline(
+            transition(started, "To Do", "In Progress"),
+            transition(started + timedelta(days=2), "In Progress", "In Testing"),
+        ),
+        started + timedelta(days=5),
+    )
+
+    assert result is not None
+    assert result.total_days == 5.0
+    assert result.in_progress_days == 2.0
+    assert result.in_review_days == 0.0
+    assert result.in_test_days == 3.0
+    assert result.skipped_phases == ["In Code Review", "Ready for Test"]

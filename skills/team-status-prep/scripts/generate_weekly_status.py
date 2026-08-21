@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import os
@@ -11,6 +12,8 @@ import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+
+LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "engineering-intelligence-logo.png"
 
 
 def esc(value: object) -> str:
@@ -845,6 +848,133 @@ def team_work_section(work: dict | None) -> str:
       <details><summary>Classification notes</summary><ul>{notes}</ul></details>'''
 
 
+def issue_finder_section(issues: list[dict]) -> str:
+    teams = sorted({item["team_name"] for item in issues}, key=str.casefold)
+    statuses = sorted(
+        {item.get("status") or "Unknown" for item in issues}, key=str.casefold
+    )
+    classifications = sorted({item.get("classification") or "unknown" for item in issues})
+
+    def options(values: list[str], labels: dict[str, str] | None = None) -> str:
+        return "".join(
+            f'<option value="{esc(value)}">{esc((labels or {}).get(value, value))}</option>'
+            for value in values
+        )
+
+    controls = (
+        '<div class="finder-filters">'
+        '<label>Team <select data-finder-field="issueTeam"><option value="">All teams</option>'
+        f'{options(teams)}</select></label>'
+        '<label>Status <select data-finder-field="issueStatus"><option value="">All statuses</option>'
+        f'{options(statuses)}</select></label>'
+        '<label>Classification <select data-finder-field="issueClassification"><option value="">All classifications</option>'
+        f'{options(classifications, {"ibr_linked": "IBR-linked", "non_ibr": "Non-IBR"})}</select></label>'
+        '<label>Highlight <select data-finder-attention><option value="">All rows</option>'
+        '<option value="flagged">Any Red or Amber</option><option value="red">Red</option>'
+        '<option value="amber">Amber</option><option value="missing">Missing/incomplete</option>'
+        '</select></label>'
+        '<button class="toggle" type="button" data-finder-clear>Clear filters</button>'
+        '<span class="finder-count" aria-live="polite"></span></div>'
+    )
+    column_manager = (
+        '<details class="column-manager"><summary>Manage columns</summary>'
+        '<p class="table-note">Move visible columns or remove them from this view. '
+        'Removed columns can be added back.</p>'
+        '<div class="column-manager-visible" data-column-list></div>'
+        '<div class="column-add"><label>Add column <select data-column-add-select>'
+        '</select></label><button class="toggle" type="button" data-column-add>'
+        'Add</button></div></details>'
+    )
+    threshold_manager = (
+        '<details class="threshold-manager"><summary>Configure cell thresholds</summary>'
+        '<p class="table-note">Values are calendar days. Blank thresholds do not '
+        'assess that metric. Red takes precedence over Amber.</p>'
+        '<div class="threshold-grid"><strong>Metric</strong><strong>Amber at ≥</strong>'
+        '<strong>Red at ≥</strong>'
+        + "".join(
+            f'<label>{label}</label><input type="number" min="0" step="0.01" '
+            f'data-threshold-metric="{metric}" data-threshold-level="amber" '
+            f'aria-label="{label} Amber threshold"><input type="number" min="0" '
+            f'step="0.01" data-threshold-metric="{metric}" data-threshold-level="red" '
+            f'aria-label="{label} Red threshold">'
+            for metric, label in (
+                ("total-cycle", "Total cycle time"),
+                ("in-progress-cycle", "In Progress"),
+                ("in-review-cycle", "In Review"),
+                ("in-test-cycle", "In Test"),
+            )
+        )
+        + '</div><div class="threshold-actions"><button class="toggle" type="button" '
+        'data-threshold-clear>Clear thresholds</button><span class="table-note" '
+        'data-threshold-note aria-live="polite"></span></div></details>'
+    )
+
+    def pull_links(item: dict) -> str:
+        pulls = item.get("linked_pull_requests", [])
+        return ", ".join(
+            link(pull.get("url"), f"#{pull['record_id'].rsplit('#', 1)[-1]}")
+            for pull in pulls
+        ) if pulls else '<span class="muted">—</span>'
+
+    def cycle_cell(item: dict, field: str, metric: str) -> str:
+        value = item.get(field)
+        current_status = (item.get("status") or "").strip().casefold()
+        workflow_started = current_status in {
+            "in progress", "in code review", "ready for test", "in testing",
+            "ready for docs", "done",
+        }
+        if value is None:
+            quality = (
+                ' quality-missing" title="Missing In Progress transition history"'
+                if workflow_started else '"'
+            )
+            return f'<td class="num metric-cell{quality} data-metric="{metric}"><span class="muted">—</span></td>'
+        return f'<td class="num metric-cell" data-metric="{metric}" data-value="{value}">{value:.2f}d</td>'
+
+    rows = "".join(
+        f'''<tr data-date="{date_attr(item.get('source_updated_at'))}"
+        data-issue-team="{esc(item['team_name'])}"
+        data-issue-status="{esc(item.get('status') or 'Unknown')}"
+        data-issue-classification="{esc(item.get('classification') or 'unknown')}">
+        <td>{link(item.get("url"), item.get("jira_key"))}</td>
+        <td>{esc(item["team_name"])}</td>
+        <td class="{'quality-missing' if not item.get('issue_type') else ''}">{esc(item.get("issue_type") or "Unknown")}</td>
+        <td class="{'quality-missing' if not item.get('status') else ''}">{esc(item.get("status") or "Unknown")}{'' if item.get("active") else ' <span class="muted">(done)</span>'}</td>
+        <td class="{'quality-missing' if not item.get('assignee_display_name') else ''}">{esc(item.get("assignee_display_name") or "Unassigned")}</td>
+        <td class="{'quality-missing' if not item.get('source_updated_at') else ''}"><time datetime="{esc(item.get('source_updated_at'))}">{esc(display_date(item.get('source_updated_at')))}</time></td>
+        {cycle_cell(item, "total_cycle_days", "total-cycle")}
+        {cycle_cell(item, "in_progress_cycle_days", "in-progress-cycle")}
+        {cycle_cell(item, "in_review_cycle_days", "in-review-cycle")}
+        {cycle_cell(item, "in_test_cycle_days", "in-test-cycle")}
+        <td>{esc(", ".join(item.get("skipped_phases", [])) or "—")}</td>
+        <td>{work_class_badge(item.get("classification"))}</td>
+        <td>{link(item.get("ibr_parent_url"), item.get("ibr_parent_key")) if item.get("ibr_parent_key") else '<span class="muted">—</span>'}</td>
+        <td>{pull_links(item)}</td>
+        <td class="{'quality-missing' if not item.get('title') else ''}">{esc(concise_text(item.get("title"), 160) or "No summary supplied.")}</td></tr>'''
+        for item in issues
+    ) or '<tr><td colspan="15" class="empty">No Jira issues were pinned in the configured team scopes.</td></tr>'
+    return (
+        f'<p class="table-note">{len(issues)} unique Jira issues from the pinned '
+        'team-field query scopes. Duplicate Jira keys are shown once.</p>'
+        + controls
+        + threshold_manager
+        + column_manager
+        + '<div class="table-wrap"><table class="issue-finder-table"><thead><tr>'
+        '<th data-column-key="jira">Jira</th><th data-column-key="team">Team</th>'
+        '<th data-column-key="type">Type</th><th data-column-key="status">Status</th>'
+        '<th data-column-key="assignee">Assignee</th><th data-column-key="updated">Updated</th>'
+        '<th data-column-key="total-cycle">Total cycle time</th>'
+        '<th data-column-key="in-progress-cycle">In Progress cycle time</th>'
+        '<th data-column-key="in-review-cycle">In Review cycle time</th>'
+        '<th data-column-key="in-test-cycle">In Test cycle time</th>'
+        '<th data-column-key="skipped-phases">Skipped phases</th>'
+        '<th data-column-key="classification">Classification</th>'
+        '<th data-column-key="ibr-parent">IBR parent</th>'
+        '<th data-column-key="github-pr">GitHub PR</th>'
+        f'<th data-column-key="description">Short description</th></tr></thead><tbody>{rows}</tbody></table></div>'
+    )
+
+
 def build_cycle_time_section(view: dict | None) -> str:
     if not view:
         return '<p class="empty">Build Cycle Time is unavailable for this team.</p>'
@@ -879,7 +1009,7 @@ def build_cycle_time_section(view: dict | None) -> str:
             <td>{esc(item.get("title") or "No summary supplied.")}</td></tr>{child_rows(item.get("children", []))}</tbody>'''
             for item in contributions
         ) or '<tbody><tr><td colspan="6" class="empty">No qualifying completed issues.</td></tr></tbody>'
-        return f'''<section class="cycle-group" data-cycle-group="{classification}"><h3>{esc(heading)}</h3>
+        return f'''<section class="cycle-group date-scope" data-cycle-group="{classification}"><h3>{esc(heading)}</h3>
         <div class="cycle-summary"><div class="metric"><strong class="cycle-average">—</strong>average calendar days</div><div class="metric"><strong class="cycle-sample">0</strong>qualifying issues</div><div class="metric"><strong class="cycle-top-status">—</strong>top contributing status</div></div>
         <p class="table-note">Top five contributors to the average for the selected Done-date range. Child rows show their own In Progress-to-Done cycle where complete transition evidence exists.</p>
         <div class="table-wrap"><table class="cycle-table"><thead><tr><th>Issue</th><th>Type</th><th class="num">Cycle time</th><th>Started → Done</th><th>Top status</th><th>Title</th></tr></thead>{rows}</table></div></section>'''
@@ -940,7 +1070,7 @@ def github_pr_metrics_section(view: dict | None) -> str:
             <td>{involved(item)}</td><td>{esc(item.get("title") or "No title supplied.")}</td></tr></tbody>'''
             for item in view.get("contributions", [])
         ) or '<tbody><tr><td colspan="5" class="empty">No qualifying merged pull requests.</td></tr></tbody>'
-        return f'''<section class="pr-metric-group" data-pr-metric="{metric}"><h3>{esc(heading)}</h3>
+        return f'''<section class="pr-metric-group date-scope" data-pr-metric="{metric}"><h3>{esc(heading)}</h3>
         <div class="cycle-summary"><div class="metric"><strong class="pr-metric-average">—</strong>average hours</div><div class="metric"><strong class="pr-metric-sample">0</strong>qualifying pull requests</div></div>
         <p class="table-note">{esc(explanation)} Top five contributors for the selected merge-date range.</p>
         <div class="table-wrap"><table class="pr-metric-table"><thead><tr><th>Pull request</th><th class="num">Time</th><th>Created → first review → merged</th><th>Involved people</th><th>Title</th></tr></thead>{rows}</table></div></section>'''
@@ -1279,7 +1409,7 @@ def person_card(person: dict) -> str:
       <details><summary>Recent linked GitHub work</summary><ul>{gh}</ul></details></article>'''
 
 
-CSS = '''body{margin:0;background:#f4f6fb;color:#172033;font:15px system-ui,sans-serif;line-height:1.5}a{color:#315bd6}nav{position:sticky;top:0;z-index:2;background:#172033;padding:12px 4vw;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:white;text-decoration:none}nav input{margin-left:auto;padding:9px;border-radius:7px;border:0;min-width:240px}main{max-width:1200px;margin:auto;padding:35px 24px}h1{font-size:34px}.app-view{display:none}.app-view.active{display:block}.hero,.card,.person,.panel,.team-card{background:white;border:1px solid #dfe4ef;border-radius:14px;padding:20px;margin:14px 0;box-shadow:0 3px 12px #26334d10}.grid,.people-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.team-grid{display:block}.team-grid .team-card{margin:14px 0}.member-list{border-top:1px solid #e7eaf1;margin-top:16px;padding-top:12px}.member-list strong{display:block;margin-bottom:5px}.metric{background:#edf1fb;padding:16px;border-radius:10px}.metric strong{display:block;font-size:27px}.card header,.team-card header{display:flex;justify-content:space-between;gap:15px}.eyebrow{color:#65708a;text-transform:uppercase;font-size:12px;letter-spacing:.08em}.muted{color:#667087}.badge,.person-link{display:inline-block;padding:5px 8px;border-radius:20px;font-size:12px;margin:2px}.person-link{background:#edf1fb;text-decoration:none}.bad{background:#ffe3e1;color:#982d28}.warn{background:#fff0c4;color:#745100}.good{background:#dff6e8;color:#17633b}.tree,.tree ul{list-style:none;padding-left:20px}.issue-row{padding:6px;border-left:2px solid #dce3f5}.depth{display:none}.rollup{color:#425a9b}.health-list{padding-left:22px}.health-list li{margin:7px 0}.activity-tables{margin-top:24px}.activity-tables h3{margin:22px 0 2px}.table-note{color:#667087;font-size:13px;margin:0 0 8px}.table-wrap{overflow-x:auto;border:1px solid #dfe4ef;border-radius:10px}table{width:100%;border-collapse:collapse;background:white;font-size:13px}th,td{padding:9px 10px;text-align:left;vertical-align:top;border-bottom:1px solid #e7eaf1}th{background:#edf1fb;color:#39445c;white-space:nowrap}tbody tr:last-child td{border-bottom:0}td time{white-space:nowrap}.filters button,.cta{padding:8px 12px;margin:3px;border:1px solid #bcc6dc;background:white;border-radius:20px;text-decoration:none}.hidden{display:none!important}.date-hidden{display:none!important}.seg.ibr{background:#12946a}.seg.nonibr{background:#d9822b}.seg.nolink{background:#8b93a7}.badge.column{background:#edf1fb;color:#39445c}.split-row{display:flex;align-items:center;gap:12px;margin:8px 0;font-size:13px;color:#52596b;flex-wrap:wrap}.split-row .meter{max-width:260px}.status-hidden{display:none!important}.status-filter-group{margin-left:auto;display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}.status-chip{font:inherit;font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid #bcc6dc;background:white;cursor:pointer;white-space:nowrap}.status-chip:hover{background:#eef2fc}.status-chip.active{background:#315bd6;border-color:#315bd6;color:white}.text-hidden{display:none!important}.table-filter{font:inherit;font-size:13px;padding:7px 10px;margin:6px 0 4px;border-radius:7px;border:1px solid #bcc6dc;background:white;min-width:220px}.table-filter:focus{outline:2px solid #315bd6;outline-offset:1px}th.sortable{cursor:pointer;user-select:none}th.sortable:hover{background:#dde6f8}th.sortable[data-dir="asc"]::after{content:" ▲";font-size:10px}th.sortable[data-dir="desc"]::after{content:" ▼";font-size:10px}details.accordion>summary .glance{font-size:13px;color:#52596b;font-weight:400}details.accordion{margin-top:0}details.accordion>summary{padding:6px 0}details.accordion>summary h2{display:inline;margin:0;font-size:24px}details.accordion[open]>summary{margin-bottom:10px}section:has(>details.accordion){background:white;border:1px solid #dfe4ef;border-radius:14px;padding:14px 20px;margin:14px 0;box-shadow:0 3px 12px #26334d10}nav .range{display:inline-flex;align-items:center;gap:8px;color:#c6cede;font-size:12px;flex-wrap:wrap}nav .range label{display:inline-flex;align-items:center;gap:5px}nav .range input[type=date]{margin-left:0;min-width:0;padding:6px;border-radius:7px;border:0;font-size:12px}#date-note{color:#ffd98a}details{margin-top:10px}summary{cursor:pointer;font-weight:600}.gap{border-left:5px solid #d89516}.attention{border-left:5px solid #cf7b20}.empty{color:#667087;font-style:italic}.breadcrumbs{margin-bottom:14px}.notable li{margin:5px 0}.completion-row{margin:6px 0 2px;display:flex;flex-wrap:wrap;gap:8px}.month-chip{display:flex;align-items:center;gap:7px;background:#f7f9fe;border:1px solid #e4e9f5;border-radius:9px;padding:6px 10px;white-space:nowrap}.month-chip strong{background:#edf1fb;padding:3px 7px;border-radius:6px}.month-chip .meter{width:84px;min-width:84px}
+CSS = '''body{margin:0;background:#f4f6fb;color:#172033;font:15px system-ui,sans-serif;line-height:1.5}a{color:#315bd6}nav{position:sticky;top:0;z-index:2;background:#172033;padding:10px 4vw;display:flex;gap:18px;align-items:center;justify-content:space-between}nav .brand{display:inline-flex;align-items:center;gap:11px;color:white;text-decoration:none;font-size:18px;font-weight:700;letter-spacing:.01em}nav .brand img{width:42px;height:42px;object-fit:contain}nav .generated{color:#c6cede;font-size:12px;text-align:right}nav .generated time{display:block;color:white;font-size:13px;font-weight:600}main{max-width:1200px;margin:auto;padding:35px 24px}h1{font-size:34px}.app-view{display:none}.app-view.active{display:block}.hero,.card,.person,.panel,.team-card{background:white;border:1px solid #dfe4ef;border-radius:14px;padding:20px;margin:14px 0;box-shadow:0 3px 12px #26334d10}.grid,.people-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.team-grid{display:block}.team-grid .team-card{margin:14px 0}.member-list{border-top:1px solid #e7eaf1;margin-top:16px;padding-top:12px}.member-list strong{display:block;margin-bottom:5px}.metric{background:#edf1fb;padding:16px;border-radius:10px}.metric strong{display:block;font-size:27px}.card header,.team-card header{display:flex;justify-content:space-between;gap:15px}.eyebrow{color:#65708a;text-transform:uppercase;font-size:12px;letter-spacing:.08em}.muted{color:#667087}.badge,.person-link{display:inline-block;padding:5px 8px;border-radius:20px;font-size:12px;margin:2px}.person-link{background:#edf1fb;text-decoration:none}.bad{background:#ffe3e1;color:#982d28}.warn{background:#fff0c4;color:#745100}.good{background:#dff6e8;color:#17633b}.tree,.tree ul{list-style:none;padding-left:20px}.issue-row{padding:6px;border-left:2px solid #dce3f5}.depth{display:none}.rollup{color:#425a9b}.health-list{padding-left:22px}.health-list li{margin:7px 0}.activity-tables{margin-top:24px}.activity-tables h3{margin:22px 0 2px}.table-note{color:#667087;font-size:13px;margin:0 0 8px}.table-wrap{overflow-x:auto;border:1px solid #dfe4ef;border-radius:10px}table{width:100%;border-collapse:collapse;background:white;font-size:13px}th,td{padding:9px 10px;text-align:left;vertical-align:top;border-bottom:1px solid #e7eaf1}th{background:#edf1fb;color:#39445c;white-space:nowrap}tbody tr:last-child td{border-bottom:0}td time{white-space:nowrap}.filters button,.cta{padding:8px 12px;margin:3px;border:1px solid #bcc6dc;background:white;border-radius:20px;text-decoration:none}.hidden{display:none!important}.date-hidden{display:none!important}.seg.ibr{background:#12946a}.seg.nonibr{background:#d9822b}.seg.nolink{background:#8b93a7}.badge.column{background:#edf1fb;color:#39445c}.split-row{display:flex;align-items:center;gap:12px;margin:8px 0;font-size:13px;color:#52596b;flex-wrap:wrap}.split-row .meter{max-width:260px}.status-hidden{display:none!important}.status-filter-group{margin-left:auto;display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}.status-chip{font:inherit;font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid #bcc6dc;background:white;cursor:pointer;white-space:nowrap}.status-chip:hover{background:#eef2fc}.status-chip.active{background:#315bd6;border-color:#315bd6;color:white}.text-hidden{display:none!important}.table-filter{font:inherit;font-size:13px;padding:7px 10px;margin:6px 0 4px;border-radius:7px;border:1px solid #bcc6dc;background:white;min-width:220px}.table-filter:focus{outline:2px solid #315bd6;outline-offset:1px}th.sortable{cursor:pointer;user-select:none}th.sortable:hover{background:#dde6f8}th.sortable[data-dir="asc"]::after{content:" ▲";font-size:10px}th.sortable[data-dir="desc"]::after{content:" ▼";font-size:10px}details.accordion>summary .glance{font-size:13px;color:#52596b;font-weight:400}details.accordion{margin-top:0}details.accordion>summary{padding:6px 0}details.accordion>summary h2{display:inline;margin:0;font-size:24px}details.accordion[open]>summary{margin-bottom:10px}section:has(>details.accordion){background:white;border:1px solid #dfe4ef;border-radius:14px;padding:14px 20px;margin:14px 0;box-shadow:0 3px 12px #26334d10}.date-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0;color:#667087;font-size:12px}.date-controls label{display:inline-flex;align-items:center;gap:5px}.date-controls input[type=date]{font:inherit;padding:6px 8px;border-radius:7px;border:1px solid #bcc6dc;background:white}.date-controls .date-note{color:#745100}details{margin-top:10px}summary{cursor:pointer;font-weight:600}.gap{border-left:5px solid #d89516}.attention{border-left:5px solid #cf7b20}.empty{color:#667087;font-style:italic}.breadcrumbs{margin-bottom:14px}.notable li{margin:5px 0}.completion-row{margin:6px 0 2px;display:flex;flex-wrap:wrap;gap:8px}.month-chip{display:flex;align-items:center;gap:7px;background:#f7f9fe;border:1px solid #e4e9f5;border-radius:9px;padding:6px 10px;white-space:nowrap}.month-chip strong{background:#edf1fb;padding:3px 7px;border-radius:6px}.month-chip .meter{width:84px;min-width:84px}
 /* Child-state palette: validated for CVD separation and >=3:1 on the white
    table surface (done #12946a vs in-progress #2a78d6). "Not started" is the
    recessive track tone, never a warning color. */
@@ -1291,9 +1421,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .breakdown .month-row th{background:#e8eefb;color:#26355c;font-size:13px;padding:8px 10px}.breakdown .parent-row td{border-top:1px solid #e7eaf1}.child-row td{background:#fafbfe;font-size:12px;padding:6px 10px}.child-row .child-key{padding-left:26px}.collapsed{display:none}
 /* Keys, badges and controls never wrap; the title column absorbs the slack. */
 .breakdown td:first-child,.breakdown th:first-child{white-space:nowrap}.breakdown td:nth-child(2){width:99%}.badge,.toggle{white-space:nowrap}
-.toggle{font:inherit;font-size:12px;color:#315bd6;background:#eef2fc;border:1px solid #d3ddf4;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle:hover{background:#e2e9f9}.toggle[aria-expanded="true"]{background:#dbe4f8}.cycle-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:10px 0}.cycle-summary .metric{padding:12px}.cycle-summary .metric strong{font-size:22px}.cycle-group{margin:22px 0}.cycle-child td{background:#fafbfe;font-size:12px}.top-status{background:#e7ddff;color:#57359a}.cycle-excluded{display:none}.cycle-excluded.focused{display:table-row-group}.rag-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:5px;font-size:12px;font-weight:700;white-space:nowrap}.rag-red{background:#ffe3e1;color:#982d28;border:1px solid #e9aaa5}.rag-amber{background:#fff0c4;color:#745100;border:1px solid #e5c66c}.rag-green{background:#dff6e8;color:#17633b;border:1px solid #96d5af}.rag-summary ul{columns:2;padding-left:22px}.rag-summary li{break-inside:avoid;margin:6px 0}.rag-instance:target,.rag-instance.focused{outline:3px solid #315bd6;outline-offset:-2px;scroll-margin-top:90px}@media(max-width:650px){nav input{width:100%;margin:0}.card header,.team-card header{display:block}.team-card{padding:15px}th,td{min-width:110px}th:last-child,td:last-child{min-width:220px}.rag-summary ul{columns:1}}'''
-JS = '''const q=document.querySelector('#q');function activeView(){return document.querySelector('.app-view.active')||document.querySelector('[data-route="/"]')}function apply(){const v=q.value.toLowerCase(),view=activeView();if(v)view.querySelectorAll('details.accordion').forEach(d=>d.open=true);view.querySelectorAll('.searchable').forEach(e=>e.classList.toggle('hidden',!e.innerText.toLowerCase().includes(v)))}if(q)q.addEventListener('input',apply);
-function route(){const raw=location.hash.startsWith('#/')?location.hash.slice(1):'/';const [path,query='']=raw.split('?');const params=new URLSearchParams(query);const views=[...document.querySelectorAll('.app-view')];const view=views.find(v=>v.dataset.route===path)||views.find(v=>v.dataset.route==='/');views.forEach(v=>v.classList.toggle('active',v===view));document.title=(view.dataset.title?view.dataset.title+' — ':'')+'Weekly Engineering Status';if(q){q.value='';apply()}document.querySelectorAll('.rag-instance.focused').forEach(e=>e.classList.remove('focused'));const focus=params.get('focus');if(focus){const target=document.getElementById(focus);if(target){const details=target.closest('details');if(details)details.open=true;target.classList.add('focused');requestAnimationFrame(()=>target.scrollIntoView({block:'center'}));return}}window.scrollTo(0,0)}
+.toggle{font:inherit;font-size:12px;color:#315bd6;background:#eef2fc;border:1px solid #d3ddf4;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle:hover{background:#e2e9f9}.toggle[aria-expanded="true"]{background:#dbe4f8}.cycle-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:10px 0}.cycle-summary .metric{padding:12px}.cycle-summary .metric strong{font-size:22px}.cycle-group{margin:22px 0}.cycle-child td{background:#fafbfe;font-size:12px}.top-status{background:#e7ddff;color:#57359a}.cycle-excluded{display:none}.cycle-excluded.focused{display:table-row-group}.rag-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:5px;font-size:12px;font-weight:700;white-space:nowrap}.rag-red{background:#ffe3e1;color:#982d28;border:1px solid #e9aaa5}.rag-amber{background:#fff0c4;color:#745100;border:1px solid #e5c66c}.rag-green{background:#dff6e8;color:#17633b;border:1px solid #96d5af}.rag-summary ul{columns:2;padding-left:22px}.rag-summary li{break-inside:avoid;margin:6px 0}.rag-instance:target,.rag-instance.focused{outline:3px solid #315bd6;outline-offset:-2px;scroll-margin-top:90px}.landing-header{margin:20px 0 28px}.landing-header h1{margin:5px 0}.landing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.landing-section{position:relative;background:white;border:1px solid #dfe4ef;border-radius:14px;padding:24px;box-shadow:0 3px 12px #26334d10;min-height:190px}.landing-section h2{font-size:24px;margin:4px 0}.landing-section p{color:#667087;margin:0 0 18px}.landing-number{color:#8792aa;font-size:12px;font-weight:700;letter-spacing:.1em}.directory-links{display:flex;flex-wrap:wrap;gap:8px}.directory-link,.finder-link{display:inline-flex;align-items:center;padding:8px 11px;border-radius:8px;background:#edf1fb;text-decoration:none;font-weight:600}.directory-link:hover,.finder-link:hover{background:#dfe7fa}.finder-link{margin-top:8px}.finder-stub{max-width:720px;margin:60px auto;text-align:center;padding:50px}.finder-filters{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:14px 0}.finder-filters label{display:grid;gap:4px;color:#667087;font-size:12px}.finder-filters select{font:inherit;min-width:170px;padding:7px 9px;border:1px solid #bcc6dc;border-radius:7px;background:white}.finder-count{color:#52596b;font-size:13px;margin-left:auto}.facet-hidden{display:none!important}.column-manager,.threshold-manager{background:#f8faff;border:1px solid #dfe4ef;border-radius:10px;padding:10px 12px;margin:12px 0}.column-manager>summary,.threshold-manager>summary{color:#315bd6}.column-manager-visible{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.column-item{display:inline-flex;align-items:center;gap:3px;background:white;border:1px solid #dfe4ef;border-radius:8px;padding:4px 5px 4px 9px}.column-item strong{font-size:12px}.column-item button{border:0;background:#edf1fb;color:#315bd6;border-radius:5px;cursor:pointer;padding:2px 6px}.column-item button:disabled{color:#9ba4b7;cursor:not-allowed}.column-add{display:flex;align-items:end;gap:7px}.column-add label{display:grid;gap:3px;color:#667087;font-size:12px}.column-add select{font:inherit;padding:6px 8px;border:1px solid #bcc6dc;border-radius:7px;background:white}.column-hidden{display:none!important}.threshold-grid{display:grid;grid-template-columns:minmax(180px,1fr) 130px 130px;gap:7px;align-items:center;max-width:520px;margin:10px 0}.threshold-grid input{font:inherit;padding:6px 8px;border:1px solid #bcc6dc;border-radius:7px;min-width:0}.threshold-actions{display:flex;align-items:center;gap:10px}.cell-red{background:#ffe3e1!important;color:#982d28;font-weight:700}.cell-amber{background:#fff0c4!important;color:#745100;font-weight:700}.cell-red::before{content:"● ";color:#b42318}.cell-amber::before{content:"▲ ";color:#9a6700}.quality-missing{background:repeating-linear-gradient(135deg,#f2f4f8,#f2f4f8 5px,#e5e9f1 5px,#e5e9f1 10px)!important;color:#52596b}.quality-missing::before{content:"⚠ ";color:#596579}.attention-hidden{display:none!important}@media(max-width:650px){nav{padding:8px 16px}.generated{max-width:150px}.card header,.team-card header{display:block}.team-card{padding:15px}.landing-grid{grid-template-columns:1fr}.landing-section{min-height:0}th,td{min-width:110px}th:last-child,td:last-child{min-width:220px}.rag-summary ul{columns:1}.finder-count{width:100%;margin-left:0}.threshold-grid{grid-template-columns:minmax(130px,1fr) 90px 90px}}'''
+JS = '''function route(){const raw=location.hash.startsWith('#/')?location.hash.slice(1):'/';const [path,query='']=raw.split('?');const params=new URLSearchParams(query);const views=[...document.querySelectorAll('.app-view')];const view=views.find(v=>v.dataset.route===path)||views.find(v=>v.dataset.route==='/');views.forEach(v=>v.classList.toggle('active',v===view));document.title=(view.dataset.title?view.dataset.title+' — ':'')+'Engineering Intelligence';document.querySelectorAll('.rag-instance.focused').forEach(e=>e.classList.remove('focused'));const focus=params.get('focus');if(focus){const target=document.getElementById(focus);if(target){const details=target.closest('details');if(details)details.open=true;target.classList.add('focused');requestAnimationFrame(()=>target.scrollIntoView({block:'center'}));return}}window.scrollTo(0,0)}
 window.addEventListener('hashchange',route);route();
 document.querySelectorAll('.status-filter-group').forEach(group=>{const scope=group.closest('details')||document;
 group.querySelectorAll('.status-chip').forEach(chip=>chip.addEventListener('click',()=>{
@@ -1306,7 +1435,7 @@ w.parentNode.insertBefore(inp,w);
 inp.addEventListener('input',()=>{const v=inp.value.toLowerCase();
 [...t.tBodies[0].rows].forEach(r=>{if(r.cells.length<=1)return;r.classList.toggle('text-hidden',Boolean(v)&&!r.innerText.toLowerCase().includes(v));});});});
 document.querySelectorAll('table').forEach(t=>{if(!t.tHead||!t.tBodies.length||t.classList.contains('cycle-table')||t.classList.contains('pr-metric-table')||t.querySelector('.child-row,.month-row'))return;const body=t.tBodies[0];
-[...t.tHead.rows[0].cells].forEach((th,i)=>{th.classList.add('sortable');th.addEventListener('click',()=>{
+[...t.tHead.rows[0].cells].forEach(th=>{th.classList.add('sortable');th.addEventListener('click',()=>{const i=th.cellIndex;
 const dir=th.dataset.dir==='asc'?'desc':'asc';
 [...t.tHead.rows[0].cells].forEach(c=>{c.removeAttribute('data-dir');c.removeAttribute('aria-sort')});
 th.dataset.dir=dir;th.setAttribute('aria-sort',dir==='asc'?'ascending':'descending');
@@ -1316,25 +1445,34 @@ data.sort((a,b)=>{const x=val(a),y=val(b);const nx=parseFloat(x.replace(/[%,]/g,
 const c=(x!==''&&y!==''&&!isNaN(nx)&&!isNaN(ny))?nx-ny:x.localeCompare(y,undefined,{numeric:true,sensitivity:'base'});
 return dir==='asc'?c:-c});
 data.concat(rest).forEach(r=>body.appendChild(r));});});});document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{const f=b.dataset.filter,scope=b.closest('.app-view')||document;scope.querySelectorAll('[data-status]').forEach(e=>e.classList.toggle('hidden',f!=='all'&&e.dataset.status!==f));});
-const dateFrom=document.querySelector('#date-from'),dateTo=document.querySelector('#date-to'),dateClear=document.querySelector('#date-clear'),dateNote=document.querySelector('#date-note');
-function updateCycleMetrics(){const from=dateFrom?.value||'',to=dateTo?.value||'';document.querySelectorAll('.cycle-group').forEach(group=>{const all=[...group.querySelectorAll('.cycle-contribution')];const included=all.filter(row=>{const d=row.dataset.cycleEnded;return(!from||d>=from)&&(!to||d<=to)});const ranked=[...included].sort((a,b)=>Number(b.dataset.cycleDays)-Number(a.dataset.cycleDays));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.cycleDays),0);const statuses={};included.forEach(row=>{const values=JSON.parse(row.dataset.statusDurations||'{}');Object.entries(values).forEach(([status,days])=>statuses[status]=(statuses[status]||0)+Number(days));});const top=Object.entries(statuses).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))[0];group.querySelector('.cycle-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.cycle-sample').textContent=String(included.length);group.querySelector('.cycle-top-status').textContent=top?top[0]+' ('+top[1].toFixed(2)+'d)':'—';});}
-function updatePrMetrics(){const from=dateFrom?.value||'',to=dateTo?.value||'';document.querySelectorAll('.pr-metric-group').forEach(group=>{const all=[...group.querySelectorAll('.pr-metric-contribution')];const included=all.filter(row=>{const d=row.dataset.prMerged;return(!from||d>=from)&&(!to||d<=to)});const ranked=[...included].sort((a,b)=>Number(b.dataset.metricHours)-Number(a.dataset.metricHours));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.metricHours),0);group.querySelector('.pr-metric-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.pr-metric-sample').textContent=String(included.length);});}
-function dateApply(){if(!dateFrom)return;const from=dateFrom.value,to=dateTo.value,active=Boolean(from||to);let undated=0;document.querySelectorAll('[data-date]').forEach(e=>{const d=e.dataset.date;let hide=false;if(active){if(!d){hide=true;undated++;}else{hide=(from&&d<from)||(to&&d>to);}}e.classList.toggle('date-hidden',hide);});updateCycleMetrics();updatePrMetrics();if(dateNote)dateNote.textContent=active?(undated?undated+' undated records hidden by the time filter':'Time filter active'):'';}
-if(dateFrom){dateFrom.addEventListener('change',dateApply);dateTo.addEventListener('change',dateApply);dateClear.addEventListener('click',()=>{dateFrom.value='';dateTo.value='';dateApply();});updateCycleMetrics();updatePrMetrics();}
+function dateControls(){const box=document.createElement('div');box.className='date-controls';box.innerHTML='<strong>Table dates</strong><label>From <input type="date" data-date-from></label><label>To <input type="date" data-date-to></label><button class="toggle" type="button" data-date-clear>Clear</button><span class="date-note"></span>';return box;}
+function bindDateScope(scope,targets,dateValue,after){const controls=dateControls(),anchor=scope.querySelector('.table-wrap')||scope;anchor.parentNode.insertBefore(controls,anchor);const from=controls.querySelector('[data-date-from]'),to=controls.querySelector('[data-date-to]'),note=controls.querySelector('.date-note');function applyDates(){const first=from.value,last=to.value,active=Boolean(first||last);let undated=0;const included=[];targets().forEach(row=>{const d=dateValue(row);let hide=false;if(active){if(!d){hide=true;undated++;}else hide=Boolean((first&&d<first)||(last&&d>last));}row.classList.toggle('date-hidden',hide);if(!hide)included.push(row);});if(after)after(included,targets());note.textContent=active?(undated?undated+' undated rows hidden':'Filter active'):'';}from.addEventListener('change',applyDates);to.addEventListener('change',applyDates);controls.querySelector('[data-date-clear]').addEventListener('click',()=>{from.value='';to.value='';applyDates();});applyDates();}
+document.querySelectorAll('.cycle-group').forEach(group=>bindDateScope(group,()=>[...group.querySelectorAll('.cycle-contribution')],row=>row.dataset.cycleEnded,(included,all)=>{const ranked=[...included].sort((a,b)=>Number(b.dataset.cycleDays)-Number(a.dataset.cycleDays));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.cycleDays),0),statuses={};included.forEach(row=>{const values=JSON.parse(row.dataset.statusDurations||'{}');Object.entries(values).forEach(([status,days])=>statuses[status]=(statuses[status]||0)+Number(days));});const top=Object.entries(statuses).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))[0];group.querySelector('.cycle-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.cycle-sample').textContent=String(included.length);group.querySelector('.cycle-top-status').textContent=top?top[0]+' ('+top[1].toFixed(2)+'d)':'—';}));
+document.querySelectorAll('.pr-metric-group').forEach(group=>bindDateScope(group,()=>[...group.querySelectorAll('.pr-metric-contribution')],row=>row.dataset.prMerged,(included,all)=>{const ranked=[...included].sort((a,b)=>Number(b.dataset.metricHours)-Number(a.dataset.metricHours));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.metricHours),0);group.querySelector('.pr-metric-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.pr-metric-sample').textContent=String(included.length);}));
+document.querySelectorAll('.table-wrap').forEach(w=>{if(w.closest('.cycle-group,.pr-metric-group'))return;const dated=[...w.querySelectorAll('[data-date]')];if(dated.length)bindDateScope(w,()=>dated,row=>row.dataset.date);});
+document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),rows=[...table.tBodies[0].rows].filter(r=>r.cells.length>1),controls=[...scope.querySelectorAll('[data-finder-field]')],attention=scope.querySelector('[data-finder-attention]'),count=scope.querySelector('.finder-count');function applyFacets(){rows.forEach(row=>{row.classList.toggle('facet-hidden',controls.some(control=>control.value&&row.dataset[control.dataset.finderField]!==control.value));const value=attention.value,level=row.dataset.attention||'none',hide=Boolean(value)&&!((value==='flagged'&&(level==='red'||level==='amber'))||level===value);row.classList.toggle('attention-hidden',hide);});const shown=rows.filter(row=>!row.classList.contains('facet-hidden')&&!row.classList.contains('attention-hidden')).length;count.textContent=shown+' of '+rows.length+' issues';}controls.forEach(control=>control.addEventListener('change',applyFacets));attention.addEventListener('change',applyFacets);scope.addEventListener('finder-attention-change',applyFacets);scope.querySelector('[data-finder-clear]').addEventListener('click',()=>{controls.forEach(control=>control.value='');attention.value='';applyFacets();});applyFacets();});
+document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),inputs=[...scope.querySelectorAll('[data-threshold-metric]')],note=scope.querySelector('[data-threshold-note]'),rows=[...table.tBodies[0].rows].filter(row=>row.cells.length>1);function threshold(metric,level){const input=inputs.find(item=>item.dataset.thresholdMetric===metric&&item.dataset.thresholdLevel===level);return input&&input.value!==''?Number(input.value):null;}function applyThresholds(){let invalid=false;const metrics=new Set(inputs.map(input=>input.dataset.thresholdMetric));metrics.forEach(metric=>{const amber=threshold(metric,'amber'),red=threshold(metric,'red');if(amber!==null&&red!==null&&red<amber)invalid=true;});table.querySelectorAll('.metric-cell').forEach(cell=>{cell.classList.remove('cell-red','cell-amber');const value=cell.dataset.value;if(value===undefined)return;const amber=threshold(cell.dataset.metric,'amber'),red=threshold(cell.dataset.metric,'red'),number=Number(value);if(red!==null&&number>=red)cell.classList.add('cell-red');else if(amber!==null&&number>=amber)cell.classList.add('cell-amber');});rows.forEach(row=>{row.dataset.attention=row.querySelector('.cell-red')?'red':row.querySelector('.cell-amber')?'amber':row.querySelector('.quality-missing')?'missing':'none';});note.textContent=invalid?'A Red threshold is below Amber; Red still takes precedence.':'';scope.dispatchEvent(new CustomEvent('finder-attention-change'));}inputs.forEach(input=>input.addEventListener('input',applyThresholds));scope.querySelector('[data-threshold-clear]').addEventListener('click',()=>{inputs.forEach(input=>input.value='');applyThresholds();});applyThresholds();});
+document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),manager=scope.querySelector('.column-manager'),headerRow=table.tHead.rows[0],allRows=[headerRow,...table.tBodies[0].rows];[...headerRow.cells].forEach((th,index)=>allRows.slice(1).forEach(row=>row.cells[index].dataset.columnKey=th.dataset.columnKey));function cellsFor(key){return allRows.map(row=>[...row.cells].find(cell=>cell.dataset.columnKey===key));}function move(key,direction){const visible=[...headerRow.cells].filter(cell=>!cell.classList.contains('column-hidden')),source=visible.find(cell=>cell.dataset.columnKey===key),index=visible.indexOf(source),target=visible[index+direction];if(!source||!target)return;const sourceCells=cellsFor(key),targetCells=cellsFor(target.dataset.columnKey);sourceCells.forEach((cell,rowIndex)=>{const targetCell=targetCells[rowIndex];targetCell.parentNode.insertBefore(cell,direction<0?targetCell:targetCell.nextSibling);});render();}function setHidden(key,hidden){cellsFor(key).forEach(cell=>cell.classList.toggle('column-hidden',hidden));render();}function add(key){const cells=cellsFor(key);cells.forEach(cell=>{cell.classList.remove('column-hidden');cell.parentNode.appendChild(cell);});render();}function render(){const visible=[...headerRow.cells].filter(cell=>!cell.classList.contains('column-hidden')),hidden=[...headerRow.cells].filter(cell=>cell.classList.contains('column-hidden')),list=manager.querySelector('[data-column-list]'),select=manager.querySelector('[data-column-add-select]');list.innerHTML=visible.map((cell,index)=>'<span class="column-item"><strong>'+cell.textContent.replace(/[▲▼]/g,'').trim()+'</strong><button type="button" data-column-left="'+cell.dataset.columnKey+'" aria-label="Move '+cell.textContent.trim()+' left" '+(index===0?'disabled':'')+'>←</button><button type="button" data-column-right="'+cell.dataset.columnKey+'" aria-label="Move '+cell.textContent.trim()+' right" '+(index===visible.length-1?'disabled':'')+'>→</button><button type="button" data-column-remove="'+cell.dataset.columnKey+'" aria-label="Remove '+cell.textContent.trim()+'" '+(visible.length===1?'disabled':'')+'>×</button></span>').join('');select.innerHTML=hidden.length?hidden.map(cell=>'<option value="'+cell.dataset.columnKey+'">'+cell.textContent.replace(/[▲▼]/g,'').trim()+'</option>').join(''):'<option value="">No hidden columns</option>';select.disabled=!hidden.length;manager.querySelector('[data-column-add]').disabled=!hidden.length;list.querySelectorAll('[data-column-left]').forEach(button=>button.onclick=()=>move(button.dataset.columnLeft,-1));list.querySelectorAll('[data-column-right]').forEach(button=>button.onclick=()=>move(button.dataset.columnRight,1));list.querySelectorAll('[data-column-remove]').forEach(button=>button.onclick=()=>setHidden(button.dataset.columnRemove,true));}manager.querySelector('[data-column-add]').onclick=()=>{const select=manager.querySelector('[data-column-add-select]');if(select.value)add(select.value);};render();});
 function setChildren(key,open){document.querySelectorAll('.child-row[data-parent="'+CSS.escape(key)+'"]').forEach(r=>r.classList.toggle('collapsed',!open));document.querySelectorAll('.toggle[data-children="'+CSS.escape(key)+'"]').forEach(b=>b.setAttribute('aria-expanded',String(open)));}
 document.querySelectorAll('.toggle[data-children]').forEach(b=>b.onclick=()=>setChildren(b.dataset.children,b.getAttribute('aria-expanded')!=='true'));
 document.querySelectorAll('.expand-all').forEach(b=>b.onclick=()=>{const open=b.dataset.open!=='true';b.dataset.open=String(open);b.textContent=open?'Collapse all children':'Expand all children';b.closest('section').querySelectorAll('.toggle[data-children]').forEach(t=>setChildren(t.dataset.children,open));});'''
 
 
-def page(title: str, body: str) -> str:
-    nav_links = '<a href="#/">Engineering Status</a><a href="#/">Overview</a>'
-    range_controls = (
-        '<span class="range"><label>From <input type="date" id="date-from"></label>'
-        '<label>To <input type="date" id="date-to"></label>'
-        '<button id="date-clear" class="toggle" type="button">Clear</button>'
-        '<span id="date-note" class="muted"></span></span>'
+def logo_data_uri() -> str:
+    encoded = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def page(title: str, body: str, generated_at: datetime) -> str:
+    generated_iso = generated_at.isoformat().replace("+00:00", "Z")
+    generated_label = generated_at.strftime("%Y-%m-%d %H:%M UTC")
+    nav = (
+        f'<a class="brand" href="#/"><img src="{logo_data_uri()}" alt="">'
+        '<span>Engineering Intelligence</span></a>'
+        '<span class="generated">Report generated'
+        f'<time datetime="{generated_iso}">{generated_label}</time></span>'
     )
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{CSS}</style></head><body><nav>{nav_links}<input id="q" placeholder="Search issues, engineers, teams…">{range_controls}</nav><main id="top">{body}</main><script>{JS}</script></body></html>'''
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{CSS}</style></head><body><nav>{nav}</nav><main id="top">{body}</main><script>{JS}</script></body></html>'''
 
 
 def write_page(path: Path, content: str) -> None:
@@ -1408,6 +1546,7 @@ def main() -> None:
         for name in report_teams
     }
     team_work = {}
+    issue_finder_work = {}
     for name in report_teams:
         if name not in team_rows:
             continue
@@ -1418,6 +1557,26 @@ def main() -> None:
             )
         except subprocess.CalledProcessError:
             team_work[name] = None
+        try:
+            issue_finder_work[name] = run_json(
+                ["team", "work", name, "--snapshot", args.snapshot,
+                 "--teams-config", str(args.teams_config), "--all-jira"], args.data_dir
+            )
+        except subprocess.CalledProcessError:
+            issue_finder_work[name] = None
+    issue_finder_by_key = {}
+    for name in report_teams:
+        work = issue_finder_work.get(name) or {}
+        for issue in work.get("jira_issues", []):
+            key = issue.get("jira_key")
+            if not key or key in issue_finder_by_key:
+                continue
+            issue_finder_by_key[key] = {**issue, "team_name": name}
+    issue_finder_issues = sorted(
+        issue_finder_by_key.values(),
+        key=lambda item: (item.get("source_updated_at") or "", item["jira_key"]),
+        reverse=True,
+    )
     items = {
         item["jira_key"]: item
         for row in selected_rows
@@ -1504,7 +1663,7 @@ def main() -> None:
         for completion in team_completion.values()
     )
 
-    team_cards = []
+    team_quick_links = []
     team_detail_sections = []
     for name in report_teams:
         row = team_rows.get(name)
@@ -1535,15 +1694,9 @@ def main() -> None:
         activity_html = team_activity_tables(team_details[name], team_people)
         notable_html = "".join(f'<li>{esc(item)}</li>' for item in notable) or '<li>No notable hygiene findings.</li>'
         team_href = f"#/teams/{slug(name)}"
-        overview_members = "".join(
-            internal_link(
-                f"#/people/{slug(person['display_name'])}",
-                person.get("preferred_name") or person["display_name"],
-                css_class="person-link",
-            )
-            for person in team_people
-        ) or '<span class="muted">No configured engineers</span>'
-        team_cards.append(f'''<article class="team-card searchable"><header><div><span class="eyebrow">Team</span><h2>{internal_link(team_href, name)}</h2></div></header><div class="member-list"><strong>People</strong>{overview_members}</div></article>''')
+        team_quick_links.append(
+            internal_link(team_href, name, css_class="directory-link")
+        )
         detail_cards = "".join(
             feature_card(feature, item, memberships, snapshot_at)
             for feature, item in feature_rows
@@ -1593,25 +1746,6 @@ def main() -> None:
             f'data-title="{esc(name)}"><div class="breadcrumbs">'
             f'{internal_link("#/", "Overview")} / {esc(name)}</div>{team_body}</section>'
         )
-
-    no_team_people = [
-        person
-        for person in people
-        if not any(person["display_name"] in names for names in team_members.values())
-    ]
-    no_team_links = "".join(
-        internal_link(
-            f"#/people/{slug(person['display_name'])}",
-            person.get("preferred_name") or person["display_name"],
-            css_class="person-link",
-        )
-        for person in no_team_people
-    ) or '<span class="muted">No configured engineers</span>'
-    team_cards.append(
-        '<article class="team-card searchable"><header><div><span class="eyebrow">Team</span>'
-        '<h2>No Team</h2></div></header><div class="member-list"><strong>People</strong>'
-        f'{no_team_links}</div></article>'
-    )
 
     individual_detail_sections = []
     for person in people:
@@ -1677,22 +1811,54 @@ def main() -> None:
             f'{internal_link("#/", "Overview")} / {esc(display)}</div>{person_body}</section>'
         )
 
-    cards = "".join(feature_card(features[key], items[key], memberships, snapshot_at) for key in sorted(features)) or '<p class="empty">No active IBR items.</p>'
-    gaps_html = f"<ul>{''.join(f'<li>{esc(gap)}</li>' for gap in gaps)}</ul>" if gaps else '<p>All configured Jira hygiene fields are evaluable for this snapshot.</p>'
+    people_quick_links = "".join(
+        internal_link(
+            f"#/people/{slug(person['display_name'])}",
+            person.get("preferred_name") or person["display_name"],
+            css_class="directory-link",
+        )
+        for person in sorted(
+            people,
+            key=lambda person: (person.get("preferred_name") or person["display_name"]).casefold(),
+        )
+    ) or '<span class="muted">No configured people.</span>'
     overview = (
         '''<section class="app-view active" data-route="/" data-title="Overview">'''
-        f'<section><h1>Teams and people</h1><p class="muted">Choose a team or person to open their page.</p><div class="team-grid">{"".join(team_cards)}</div></section>'
-        + accordion("Evidence coverage", gaps_html, classes="panel gap")
-        + accordion(
-            "All IBR Board work",
-            '<div class="filters"><button data-filter="all">All</button>'
-            '<button data-filter="In Progress">In Progress</button>'
-            '<button data-filter="Ready for build">Ready for Build</button></div>' + cards,
-        )
+        '<header class="landing-header"><span class="eyebrow">Overview</span>'
+        '<h1>Engineering Intelligence</h1>'
+        '<p class="muted">Choose where you want to explore.</p></header>'
+        '<div class="landing-grid">'
+        '<section class="landing-section"><span class="landing-number">01</span>'
+        f'<h2>Teams</h2><p>Open a team health and delivery view.</p><div class="directory-links">{"".join(team_quick_links)}</div></section>'
+        '<section class="landing-section"><span class="landing-number">02</span>'
+        f'<h2>People</h2><p>Open an individual work-context view.</p><div class="directory-links">{people_quick_links}</div></section>'
+        '<section class="landing-section"><span class="landing-number">03</span>'
+        '<h2>Issue Finder</h2><p>Find and inspect Jira work across configured scopes.</p>'
+        '<a class="finder-link" href="#/issue-finder">Open Issue Finder <span aria-hidden="true">→</span></a></section>'
+        '<section class="landing-section"><span class="landing-number">04</span>'
+        '<h2>GitHub Finder</h2><p>Find pull requests, commits, and reviews across configured repositories.</p>'
+        '<a class="finder-link" href="#/github-finder">Open GitHub Finder <span aria-hidden="true">→</span></a></section>'
+        '</div>'
         + "</section>"
     )
-    body = overview + "".join(team_detail_sections) + "".join(individual_detail_sections)
-    write_page(args.output, page("Weekly Engineering Status", body))
+    finder_pages = (
+        '<section class="app-view" data-route="/issue-finder" data-title="Issue Finder">'
+        f'<div class="breadcrumbs">{internal_link("#/", "Overview")} / Issue Finder</div>'
+        '<header class="landing-header"><span class="eyebrow">Jira explorer</span>'
+        '<h1>Issue Finder</h1><p class="muted">Filter all Jira issues captured by the configured team scopes.</p></header>'
+        f'{issue_finder_section(issue_finder_issues)}</section>'
+        '<section class="app-view" data-route="/github-finder" data-title="GitHub Finder">'
+        f'<div class="breadcrumbs">{internal_link("#/", "Overview")} / GitHub Finder</div>'
+        '<div class="hero finder-stub"><span class="eyebrow">Coming next</span>'
+        '<h1>GitHub Finder</h1><p>This workspace is ready for the GitHub record-finding experience.</p></div></section>'
+    )
+    body = (
+        overview
+        + finder_pages
+        + "".join(team_detail_sections)
+        + "".join(individual_detail_sections)
+    )
+    write_page(args.output, page("Engineering Intelligence", body, datetime.now(UTC)))
     print(json.dumps({"output": str(args.output.resolve()), "snapshot_id": dashboard["snapshot_id"], "features": len(features), "people": len(people), "team_sections": len(team_detail_sections), "individual_sections": len(people), "gaps": gaps,
         "completion": {
             "current_month": current_month,

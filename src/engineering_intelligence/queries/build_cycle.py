@@ -42,6 +42,15 @@ class _Timeline:
     transitions: list[JiraStatusTransition]
 
 
+@dataclass(frozen=True)
+class WorkflowCycleMetrics:
+    total_days: float
+    in_progress_days: float
+    in_review_days: float
+    in_test_days: float
+    skipped_phases: list[str]
+
+
 class BuildCycleTimeQuery:
     def __init__(self, sessions: sessionmaker[Session]) -> None:
         self.sessions = sessions
@@ -276,6 +285,90 @@ def _cycle(
         for status_name, days in sorted(totals.items(), key=lambda item: (-item[1], item[0]))
     ]
     return started, ended, round((ended - started).total_seconds() / 86400, 2), durations
+
+
+WORKFLOW_PHASES = (
+    "In Progress",
+    "In Code Review",
+    "Ready for Test",
+    "In Testing",
+    "Ready for Docs",
+    "Done",
+)
+
+
+def workflow_cycle_metrics(
+    timeline: _Timeline,
+    as_of: datetime,
+) -> WorkflowCycleMetrics | None:
+    """Measure the pictured delivery workflow through Done or the snapshot boundary."""
+    started = next(
+        (
+            _as_utc(transition.changed_at)
+            for transition in timeline.transitions
+            if _canonical(transition.to_status_name) == "in progress"
+        ),
+        None,
+    )
+    if started is None:
+        return None
+    done_at = next(
+        (
+            _as_utc(transition.changed_at)
+            for transition in timeline.transitions
+            if _canonical(transition.to_status_name) == "done"
+            and _as_utc(transition.changed_at) >= started
+        ),
+        None,
+    )
+    ended = min(done_at or as_of, as_of)
+    if ended < started:
+        return None
+
+    totals: dict[str, float] = defaultdict(float)
+    visited = {"in progress"}
+    status = "In Progress"
+    cursor = started
+    for transition in timeline.transitions:
+        changed_at = _as_utc(transition.changed_at)
+        if changed_at < started:
+            continue
+        if changed_at == started:
+            status = transition.to_status_name or status
+            visited.add(_canonical(status))
+            continue
+        interval_end = min(changed_at, ended)
+        if interval_end > cursor:
+            totals[_canonical(status)] += (
+                interval_end - cursor
+            ).total_seconds() / 86400
+            cursor = interval_end
+        if changed_at >= ended:
+            if changed_at == ended:
+                visited.add(_canonical(transition.to_status_name))
+            break
+        status = transition.to_status_name or "Unknown"
+        visited.add(_canonical(status))
+    if cursor < ended:
+        totals[_canonical(status)] += (ended - cursor).total_seconds() / 86400
+
+    phase_keys = [_canonical(phase) for phase in WORKFLOW_PHASES]
+    reached = [index for index, phase in enumerate(phase_keys) if phase in visited]
+    furthest = max(reached, default=0)
+    skipped = [
+        WORKFLOW_PHASES[index]
+        for index in range(1, furthest)
+        if phase_keys[index] not in visited
+    ]
+    return WorkflowCycleMetrics(
+        total_days=round((ended - started).total_seconds() / 86400, 2),
+        in_progress_days=round(totals["in progress"], 2),
+        in_review_days=round(totals["in code review"], 2),
+        in_test_days=round(
+            totals["ready for test"] + totals["in testing"], 2
+        ),
+        skipped_phases=skipped,
+    )
 
 
 def _children(

@@ -35,8 +35,19 @@ unavailable. Never access private notes or 1:1 content.
 
 Create exactly one self-contained HTML single-page app with embedded CSS and JavaScript:
 
-- `#/` is an overview with one full-width row per configured team. The linked team name
-  is the only route control, and every current member links to their person page.
+- `#/` is a four-part landing page: Teams, People, Issue Finder, and GitHub Finder.
+  Teams and People provide compact direct links to every configured detail page.
+  `#/issue-finder` provides one deduplicated table of every Jira issue pinned in the
+  configured team-field query scopes, with text, date, team, status, and IBR
+  classification filters. Users can add, remove, and reorder the Issue Finder's
+  visible columns without changing its underlying evidence. Cycle columns measure
+  calendar time from first entry into In Progress through first Done or the pinned
+  snapshot boundary, break out In Progress, Code Review, and Test time, and identify
+  skipped steps in the ordered delivery workflow. User-supplied Amber and Red cycle
+  thresholds color and symbolize qualifying cells, while missing or incomplete
+  evidence uses a distinct treatment. A row filter surfaces any issue with at least
+  one Red or Amber cell. Never invent default thresholds. `#/github-finder` remains
+  a routed placeholder page.
 - `#/teams/TEAM` shows workflow, hierarchy, health, hygiene, metrics, Jira/GitHub
   classification when its configured query exists, Build Cycle Time split between
   IBR-linked parents and all non-IBR team-assigned issue types with status/child
@@ -47,10 +58,13 @@ Create exactly one self-contained HTML single-page app with embedded CSS and Jav
 - `#/people/PERSON` shows neutral work context, current memberships, Jira relationships,
   delivery evidence, deterministic signals, and team links.
 
-Keep overview rows expanded and secondary evidence on detail routes collapsed. Include
-clickable evidence, explicit empty states, snapshot ID, generation time, source
-freshness, search, sortable flat tables, table filters, status filters, and a global
-date range filter. Direct hash routes must work when the HTML file is opened locally.
+Keep overview rows expanded and secondary evidence on detail routes collapsed. The top
+navigation identifies the application as Engineering Intelligence, embeds the supplied
+logo asset, and shows the report-generation timestamp. Include clickable evidence,
+explicit empty states, snapshot ID, generation time, source freshness, sortable flat
+tables, table filters, and status filters. Date-range controls belong beside the table
+or metric group they filter and must not apply globally. Direct hash routes must work
+when the HTML file is opened locally.
 
 Run the renderer with the same installed configuration used by refresh:
 

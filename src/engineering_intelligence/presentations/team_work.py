@@ -34,6 +34,11 @@ class ClassifiedJiraIssue(BaseModel):
     ibr_parent_key: str | None
     ibr_parent_url: str | None
     active: bool
+    total_cycle_days: float | None = None
+    in_progress_cycle_days: float | None = None
+    in_review_cycle_days: float | None = None
+    in_test_cycle_days: float | None = None
+    skipped_phases: list[str] = Field(default_factory=list)
 
 
 class ClassifiedGitHubRecord(BaseModel):
