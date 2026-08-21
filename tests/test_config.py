@@ -18,11 +18,25 @@ def test_source_example_is_valid() -> None:
     assert all(board.url is not None for board in config.jira.boards)
     assert config.jira.queries == []
     assert config.jira.gravitee_customers_field_id is None
-    repositories = {
-        repository.full_name: set(repository.team_ids)
-        for repository in config.github.repositories
-    }
-    assert repositories == {"CHANGE_ME/CHANGE_ME": {"example-team"}}
+    assert [repository.full_name for repository in config.github.repositories] == [
+        "CHANGE_ME/CHANGE_ME"
+    ]
+
+
+def test_legacy_repository_team_ids_are_ignored() -> None:
+    repository = SourceConfig.model_validate({
+        "jira": {
+            "base_url": "https://example.atlassian.net",
+            "boards": [{"id": 1, "name": "IBR"}],
+        },
+        "github": {
+            "repositories": [
+                {"full_name": "example/repo", "team_ids": ["legacy-team"]}
+            ]
+        },
+    }).github.repositories[0]
+
+    assert repository.model_dump() == {"full_name": "example/repo"}
 
 
 def test_legacy_portfolio_role_normalizes_to_ibr() -> None:

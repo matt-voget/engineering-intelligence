@@ -89,8 +89,8 @@ promote a new clone:
   legacy alias and normalizes to `ibr`.
 - Use stable lowercase IDs for teams and people. Preserve IDs across display-name
   changes and represent secondary membership with the same person ID in multiple teams.
-- Repository `team_ids` must refer to configured team IDs. Shared repositories may map
-  to multiple teams; the mapping is scope, not exclusive ownership.
+- Repositories are organization-wide collection scope and are never mapped to teams.
+  Attribute GitHub work to a team only through confirmed member `github_login` values.
 - Optional team classification queries use `team-field-TEAM_ID`.
 - Set Jira custom-field IDs only after verifying them against the user's Jira instance.
 - Never commit live URLs, account IDs, rosters, tokens, generated reports, databases,

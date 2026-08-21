@@ -8,9 +8,11 @@ identity, and team ordering. Run the complete refresh first and require a receip
 every configured GitHub repository run. A failed or missing configured source blocks
 rendering. The normalized store is the deduplication boundary; never merge raw exports.
 
-The Jira board whose configured role is `ibr` (the IBR board; `portfolio` is a legacy alias) supplies the report workflow. If
-none has that role, the first configured board is used. Named queries and repositories
-extend coverage but do not imply ownership beyond their explicit configuration.
+The Jira board whose configured role is `ibr` (the IBR board; `portfolio` is a legacy
+alias) supplies the report workflow. If none has that role, the first configured board
+is used. Named queries extend Jira coverage. GitHub repositories are organization-wide
+collection scope and never imply team ownership; a GitHub record belongs in a team's
+view only through a configured member's GitHub identity.
 
 ## Evidence and synthesis
 
@@ -19,6 +21,9 @@ snapshot, including secondary memberships and people without a current team. Pre
 source freshness, empty workflow states, unmapped statuses, exact Target Date text,
 flags, metrics definitions, sample sizes, exclusions, Jira hierarchy, blocking links,
 and linked GitHub pull requests, commits, and reviews.
+Preserve configured RAG rule IDs, thresholds, symbols, team/classification scope, and
+the deterministic assessment on each metric instance. Never infer an unconfigured
+threshold.
 
 Agent-authored summaries must be neutral weekly-update prose grounded in links. Group
 related work into themes and explain why it matters; do not concatenate ticket text or
@@ -33,7 +38,12 @@ Create exactly one self-contained HTML single-page app with embedded CSS and Jav
 - `#/` is an overview with one full-width row per configured team. The linked team name
   is the only route control, and every current member links to their person page.
 - `#/teams/TEAM` shows workflow, hierarchy, health, hygiene, metrics, Jira/GitHub
-  classification when its configured query exists, and member links.
+  classification when its configured query exists, Build Cycle Time split between
+  IBR-linked parents and all non-IBR team-assigned issue types with status/child
+  evidence, GitHub PR pickup/review time across all configured repositories scoped by
+  team-member author identity with contributor and participant evidence, and member
+  links. Team Health includes a red/amber/green index whose links open the owning
+  section and jump to the exact assessed issue or pull request.
 - `#/people/PERSON` shows neutral work context, current memberships, Jira relationships,
   delivery evidence, deterministic signals, and team links.
 

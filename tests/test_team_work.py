@@ -233,11 +233,9 @@ def test_team_work_classifies_jira_and_github_records(tmp_path: Path) -> None:
     assert inherited.classification == "ibr_linked"
     assert inherited.link_basis == "via_pull_request"
     assert inherited.jira_keys == ["IDN-2"]
-    # A review inherits the pull request's keys even for an outside reviewer,
-    # because the linked issue carries this team's Team field.
-    review = records[("review", "7001")]
-    assert review.classification == "ibr_linked"
-    assert review.link_basis == "via_pull_request"
+    # An outside review is not attributed to this team merely because its pull
+    # request links to Jira work carrying the team's Team field.
+    assert ("review", "7001") not in records
     # A keyless pull request by a configured member stays visible as unlinked.
     unlinked = records[("pull_request", "gravitee-io/example#18")]
     assert unlinked.classification == "unlinked"
@@ -246,7 +244,7 @@ def test_team_work_classifies_jira_and_github_records(tmp_path: Path) -> None:
     non_ibr = records[("pull_request", "gravitee-io/example#19")]
     assert non_ibr.classification == "non_ibr"
     assert non_ibr.jira_keys == ["ES-99"]
-    assert work.github_split.ibr_linked == 4
+    assert work.github_split.ibr_linked == 3
     assert work.github_split.non_ibr == 1
     assert work.github_split.unlinked == 1
 

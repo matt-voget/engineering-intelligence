@@ -845,6 +845,156 @@ def team_work_section(work: dict | None) -> str:
       <details><summary>Classification notes</summary><ul>{notes}</ul></details>'''
 
 
+def build_cycle_time_section(view: dict | None) -> str:
+    if not view:
+        return '<p class="empty">Build Cycle Time is unavailable for this team.</p>'
+
+    def status_data(durations: list[dict]) -> str:
+        return esc(json.dumps({item["status"]: item["days"] for item in durations}))
+
+    def child_rows(children: list[dict]) -> str:
+        return "".join(
+            f'''<tr class="cycle-child"><td style="padding-left:{16 + child.get('depth', 1) * 14}px">↳ {link(child.get("url"), child.get("jira_key"))}</td>
+            <td>{esc(child.get("issue_type") or "Unknown")}</td>
+            <td class="num">{f'{child["cycle_days"]:.2f} days' if child.get("cycle_days") is not None else '<span class="muted">Unavailable</span>'}</td>
+            <td>{esc(display_date(child.get("period_started_at")))} → {esc(display_date(child.get("period_ended_at")))}</td>
+            <td>{f'<span class="badge top-status">{esc(child.get("top_status"))}</span>' if child.get("top_status") else '<span class="muted">—</span>'}</td>
+            <td>{esc(child.get("title") or "No summary supplied.")}{f'<br><span class="muted">{esc(child.get("warning"))}</span>' if child.get("warning") else ''}</td></tr>'''
+            for child in children
+        )
+
+    def group_html(classification: str, heading: str) -> str:
+        group = next(
+            (item for item in view.get("groups", []) if item["classification"] == classification),
+            {"contributions": []},
+        )
+        contributions = group.get("contributions", [])
+        rows = "".join(
+            f'''<tbody{rag_anchor_attr(item.get("rag"))} class="cycle-contribution rag-instance" data-cycle-ended="{date_attr(item.get('period_ended_at'))}" data-cycle-days="{item['cycle_days']}" data-status-durations="{status_data(item.get('status_durations', []))}">
+            <tr class="cycle-parent"><td>{rag_badge(item.get("rag"))} {link(item.get("url"), item.get("jira_key"))}</td>
+            <td>{esc(item.get("issue_type") or "Unknown")}</td>
+            <td class="num"><strong>{item['cycle_days']:.2f} days</strong></td>
+            <td>{esc(display_date(item.get("period_started_at")))} → <time datetime="{esc(item.get('period_ended_at'))}">{esc(display_date(item.get("period_ended_at")))}</time></td>
+            <td>{f'<span class="badge top-status">{esc(item.get("top_status"))}</span>' if item.get("top_status") else '<span class="muted">—</span>'}</td>
+            <td>{esc(item.get("title") or "No summary supplied.")}</td></tr>{child_rows(item.get("children", []))}</tbody>'''
+            for item in contributions
+        ) or '<tbody><tr><td colspan="6" class="empty">No qualifying completed issues.</td></tr></tbody>'
+        return f'''<section class="cycle-group" data-cycle-group="{classification}"><h3>{esc(heading)}</h3>
+        <div class="cycle-summary"><div class="metric"><strong class="cycle-average">—</strong>average calendar days</div><div class="metric"><strong class="cycle-sample">0</strong>qualifying issues</div><div class="metric"><strong class="cycle-top-status">—</strong>top contributing status</div></div>
+        <p class="table-note">Top five contributors to the average for the selected Done-date range. Child rows show their own In Progress-to-Done cycle where complete transition evidence exists.</p>
+        <div class="table-wrap"><table class="cycle-table"><thead><tr><th>Issue</th><th>Type</th><th class="num">Cycle time</th><th>Started → Done</th><th>Top status</th><th>Title</th></tr></thead>{rows}</table></div></section>'''
+
+    notes = "".join(f'<li>{esc(note)}</li>' for note in view.get("data_quality_notes", []))
+    return (
+        '<p class="table-note">IBR-linked work includes Epic, Feature Request, and FDI Request parents. Non-IBR work includes every issue type assigned to the team that is neither on the IBR board nor below an IBR item. The global time filter selects issues by the date they entered Done.</p>'
+        + group_html("ibr_linked", "IBR-linked parent issues")
+        + group_html("non_ibr", "Non-IBR team issues — all issue types")
+        + f'<details><summary>Metric definition and data notes</summary><ul>{notes}</ul></details>'
+    )
+
+
+def rag_anchor_attr(assessment: dict | None) -> str:
+    return f' id="{esc(assessment["anchor_id"])}"' if assessment else ""
+
+
+def rag_badge(assessment: dict | None) -> str:
+    if not assessment:
+        return ""
+    level = assessment["level"]
+    return (
+        f'<span class="rag-badge rag-{esc(level)}" '
+        f'title="{esc(assessment["explanation"])}" '
+        f'aria-label="{esc(level.title())}: {esc(assessment["rule_label"])}">'
+        f'<span aria-hidden="true">{esc(assessment["symbol"])}</span> '
+        f'{esc(level.title())}</span>'
+    )
+
+
+def github_pr_metrics_section(view: dict | None) -> str:
+    if not view:
+        return '<p class="empty">GitHub PR metrics are unavailable for this team.</p>'
+
+    def person(person_ref: dict | None) -> str:
+        if not person_ref:
+            return "Unknown"
+        login = f"@{person_ref['login']}"
+        return (
+            f"{person_ref['display_name']} ({login})"
+            if person_ref.get("display_name")
+            else login
+        )
+
+    def involved(item: dict) -> str:
+        author = f"Author: {person(item.get('author'))}"
+        reviewers = ", ".join(person(reviewer) for reviewer in item.get("reviewers", []))
+        return esc(author + " · Reviewers: " + (reviewers or "Unknown"))
+
+    def metric_group(metric: str, heading: str, explanation: str) -> str:
+        field = f"{metric}_hours"
+        rag_field = f"{metric}_rag"
+        rows = "".join(
+            f'''<tbody{rag_anchor_attr(item.get(rag_field))} class="pr-metric-contribution rag-instance" data-pr-merged="{date_attr(item.get('merged_at'))}" data-metric-hours="{item[field]}"><tr>
+            <td>{rag_badge(item.get(rag_field))} {link(item.get("url"), f'{item["repository"]}#{item["number"]}')}</td>
+            <td class="num"><strong>{item[field]:.2f} hours</strong></td>
+            <td>{esc(display_date(item.get("created_at")))} → {esc(display_date(item.get("first_reviewed_at")))} → <time datetime="{esc(item.get('merged_at'))}">{esc(display_date(item.get("merged_at")))}</time></td>
+            <td>{involved(item)}</td><td>{esc(item.get("title") or "No title supplied.")}</td></tr></tbody>'''
+            for item in view.get("contributions", [])
+        ) or '<tbody><tr><td colspan="5" class="empty">No qualifying merged pull requests.</td></tr></tbody>'
+        return f'''<section class="pr-metric-group" data-pr-metric="{metric}"><h3>{esc(heading)}</h3>
+        <div class="cycle-summary"><div class="metric"><strong class="pr-metric-average">—</strong>average hours</div><div class="metric"><strong class="pr-metric-sample">0</strong>qualifying pull requests</div></div>
+        <p class="table-note">{esc(explanation)} Top five contributors for the selected merge-date range.</p>
+        <div class="table-wrap"><table class="pr-metric-table"><thead><tr><th>Pull request</th><th class="num">Time</th><th>Created → first review → merged</th><th>Involved people</th><th>Title</th></tr></thead>{rows}</table></div></section>'''
+
+    notes = "".join(f'<li>{esc(note)}</li>' for note in view.get("data_quality_notes", []))
+    repository_count = len(view.get("repositories", []))
+    authors = ", ".join(f"@{login}" for login in view.get("author_logins", [])) or "No active GitHub identities configured"
+    return (
+        f'<p class="table-note">Repository scope: all {repository_count} configured repositories. Author scope: {esc(authors)}. The global time filter selects pull requests by merge date.</p>'
+        + metric_group(
+            "pickup",
+            "Average pickup time",
+            "Elapsed time from PR creation to the first qualifying review.",
+        )
+        + metric_group(
+            "review",
+            "Average review time",
+            "Elapsed time from the first qualifying review to merge.",
+        )
+        + f'<details><summary>Metric definition and data notes</summary><ul>{notes}</ul></details>'
+    )
+
+
+def rag_status_index(team_slug: str, build_cycle: dict | None, github_pr: dict | None) -> str:
+    assessments: list[tuple[dict, str]] = []
+    for group in (build_cycle or {}).get("groups", []):
+        for item in group.get("contributions", []):
+            if item.get("rag"):
+                assessments.append((item["rag"], item["jira_key"]))
+    for item in (github_pr or {}).get("contributions", []):
+        record = f'{item["repository"]}#{item["number"]}'
+        for field in ("pickup_rag", "review_rag"):
+            if item.get(field):
+                assessments.append((item[field], record))
+    if not assessments:
+        return '<p class="muted">No RAG rules are configured for this team.</p>'
+    order = {"red": 0, "amber": 1, "green": 2}
+    assessments.sort(key=lambda pair: (order[pair[0]["level"]], pair[1]))
+    counts = {
+        level: sum(item["level"] == level for item, _record in assessments)
+        for level in ("red", "amber", "green")
+    }
+    links = "".join(
+        f'<li>{rag_badge(item)} <a href="#/teams/{esc(team_slug)}?focus={esc(item["anchor_id"])}">'
+        f'{esc(record)} — {esc(item["rule_label"])}</a></li>'
+        for item, record in assessments
+    )
+    return (
+        '<div class="rag-summary" aria-label="Red amber green status summary">'
+        f'<p>{counts["red"]} red · {counts["amber"]} amber · {counts["green"]} green</p>'
+        f'<ul>{links}</ul></div>'
+    )
+
+
 def team_summaries(
     name: str,
     row: dict,
@@ -1141,21 +1291,21 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .breakdown .month-row th{background:#e8eefb;color:#26355c;font-size:13px;padding:8px 10px}.breakdown .parent-row td{border-top:1px solid #e7eaf1}.child-row td{background:#fafbfe;font-size:12px;padding:6px 10px}.child-row .child-key{padding-left:26px}.collapsed{display:none}
 /* Keys, badges and controls never wrap; the title column absorbs the slack. */
 .breakdown td:first-child,.breakdown th:first-child{white-space:nowrap}.breakdown td:nth-child(2){width:99%}.badge,.toggle{white-space:nowrap}
-.toggle{font:inherit;font-size:12px;color:#315bd6;background:#eef2fc;border:1px solid #d3ddf4;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle:hover{background:#e2e9f9}.toggle[aria-expanded="true"]{background:#dbe4f8}@media(max-width:650px){nav input{width:100%;margin:0}.card header,.team-card header{display:block}.team-card{padding:15px}th,td{min-width:110px}th:last-child,td:last-child{min-width:220px}}'''
+.toggle{font:inherit;font-size:12px;color:#315bd6;background:#eef2fc;border:1px solid #d3ddf4;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle:hover{background:#e2e9f9}.toggle[aria-expanded="true"]{background:#dbe4f8}.cycle-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:10px 0}.cycle-summary .metric{padding:12px}.cycle-summary .metric strong{font-size:22px}.cycle-group{margin:22px 0}.cycle-child td{background:#fafbfe;font-size:12px}.top-status{background:#e7ddff;color:#57359a}.cycle-excluded{display:none}.cycle-excluded.focused{display:table-row-group}.rag-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:5px;font-size:12px;font-weight:700;white-space:nowrap}.rag-red{background:#ffe3e1;color:#982d28;border:1px solid #e9aaa5}.rag-amber{background:#fff0c4;color:#745100;border:1px solid #e5c66c}.rag-green{background:#dff6e8;color:#17633b;border:1px solid #96d5af}.rag-summary ul{columns:2;padding-left:22px}.rag-summary li{break-inside:avoid;margin:6px 0}.rag-instance:target,.rag-instance.focused{outline:3px solid #315bd6;outline-offset:-2px;scroll-margin-top:90px}@media(max-width:650px){nav input{width:100%;margin:0}.card header,.team-card header{display:block}.team-card{padding:15px}th,td{min-width:110px}th:last-child,td:last-child{min-width:220px}.rag-summary ul{columns:1}}'''
 JS = '''const q=document.querySelector('#q');function activeView(){return document.querySelector('.app-view.active')||document.querySelector('[data-route="/"]')}function apply(){const v=q.value.toLowerCase(),view=activeView();if(v)view.querySelectorAll('details.accordion').forEach(d=>d.open=true);view.querySelectorAll('.searchable').forEach(e=>e.classList.toggle('hidden',!e.innerText.toLowerCase().includes(v)))}if(q)q.addEventListener('input',apply);
-function route(){const path=location.hash.startsWith('#/')?location.hash.slice(1):'/';const views=[...document.querySelectorAll('.app-view')];const view=views.find(v=>v.dataset.route===path)||views.find(v=>v.dataset.route==='/');views.forEach(v=>v.classList.toggle('active',v===view));document.title=(view.dataset.title?view.dataset.title+' — ':'')+'Weekly Engineering Status';if(q){q.value='';apply()}window.scrollTo(0,0)}
+function route(){const raw=location.hash.startsWith('#/')?location.hash.slice(1):'/';const [path,query='']=raw.split('?');const params=new URLSearchParams(query);const views=[...document.querySelectorAll('.app-view')];const view=views.find(v=>v.dataset.route===path)||views.find(v=>v.dataset.route==='/');views.forEach(v=>v.classList.toggle('active',v===view));document.title=(view.dataset.title?view.dataset.title+' — ':'')+'Weekly Engineering Status';if(q){q.value='';apply()}document.querySelectorAll('.rag-instance.focused').forEach(e=>e.classList.remove('focused'));const focus=params.get('focus');if(focus){const target=document.getElementById(focus);if(target){const details=target.closest('details');if(details)details.open=true;target.classList.add('focused');requestAnimationFrame(()=>target.scrollIntoView({block:'center'}));return}}window.scrollTo(0,0)}
 window.addEventListener('hashchange',route);route();
 document.querySelectorAll('.status-filter-group').forEach(group=>{const scope=group.closest('details')||document;
 group.querySelectorAll('.status-chip').forEach(chip=>chip.addEventListener('click',()=>{
 chip.classList.toggle('active');chip.setAttribute('aria-pressed',chip.classList.contains('active'));
 const active=new Set([...group.querySelectorAll('.status-chip.active')].map(c=>c.dataset.status));
 scope.querySelectorAll('[data-issue-status]').forEach(r=>r.classList.toggle('status-hidden',active.size>0&&!active.has(r.dataset.issueStatus)));}));});
-document.querySelectorAll('.table-wrap').forEach(w=>{const t=w.querySelector('table');if(!t||!t.tHead||!t.tBodies.length||t.querySelector('.child-row,.month-row'))return;
+document.querySelectorAll('.table-wrap').forEach(w=>{const t=w.querySelector('table');if(!t||!t.tHead||!t.tBodies.length||t.classList.contains('cycle-table')||t.classList.contains('pr-metric-table')||t.querySelector('.child-row,.month-row'))return;
 const inp=document.createElement('input');inp.type='search';inp.placeholder='Filter rows…';inp.className='table-filter';inp.setAttribute('aria-label','Filter table rows');
 w.parentNode.insertBefore(inp,w);
 inp.addEventListener('input',()=>{const v=inp.value.toLowerCase();
 [...t.tBodies[0].rows].forEach(r=>{if(r.cells.length<=1)return;r.classList.toggle('text-hidden',Boolean(v)&&!r.innerText.toLowerCase().includes(v));});});});
-document.querySelectorAll('table').forEach(t=>{if(!t.tHead||!t.tBodies.length||t.querySelector('.child-row,.month-row'))return;const body=t.tBodies[0];
+document.querySelectorAll('table').forEach(t=>{if(!t.tHead||!t.tBodies.length||t.classList.contains('cycle-table')||t.classList.contains('pr-metric-table')||t.querySelector('.child-row,.month-row'))return;const body=t.tBodies[0];
 [...t.tHead.rows[0].cells].forEach((th,i)=>{th.classList.add('sortable');th.addEventListener('click',()=>{
 const dir=th.dataset.dir==='asc'?'desc':'asc';
 [...t.tHead.rows[0].cells].forEach(c=>{c.removeAttribute('data-dir');c.removeAttribute('aria-sort')});
@@ -1167,8 +1317,10 @@ const c=(x!==''&&y!==''&&!isNaN(nx)&&!isNaN(ny))?nx-ny:x.localeCompare(y,undefin
 return dir==='asc'?c:-c});
 data.concat(rest).forEach(r=>body.appendChild(r));});});});document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{const f=b.dataset.filter,scope=b.closest('.app-view')||document;scope.querySelectorAll('[data-status]').forEach(e=>e.classList.toggle('hidden',f!=='all'&&e.dataset.status!==f));});
 const dateFrom=document.querySelector('#date-from'),dateTo=document.querySelector('#date-to'),dateClear=document.querySelector('#date-clear'),dateNote=document.querySelector('#date-note');
-function dateApply(){if(!dateFrom)return;const from=dateFrom.value,to=dateTo.value,active=Boolean(from||to);let undated=0;document.querySelectorAll('[data-date]').forEach(e=>{const d=e.dataset.date;let hide=false;if(active){if(!d){hide=true;undated++;}else{hide=(from&&d<from)||(to&&d>to);}}e.classList.toggle('date-hidden',hide);});if(dateNote)dateNote.textContent=active?(undated?undated+' undated records hidden by the time filter':'Time filter active'):'';}
-if(dateFrom){dateFrom.addEventListener('change',dateApply);dateTo.addEventListener('change',dateApply);dateClear.addEventListener('click',()=>{dateFrom.value='';dateTo.value='';dateApply();});}
+function updateCycleMetrics(){const from=dateFrom?.value||'',to=dateTo?.value||'';document.querySelectorAll('.cycle-group').forEach(group=>{const all=[...group.querySelectorAll('.cycle-contribution')];const included=all.filter(row=>{const d=row.dataset.cycleEnded;return(!from||d>=from)&&(!to||d<=to)});const ranked=[...included].sort((a,b)=>Number(b.dataset.cycleDays)-Number(a.dataset.cycleDays));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.cycleDays),0);const statuses={};included.forEach(row=>{const values=JSON.parse(row.dataset.statusDurations||'{}');Object.entries(values).forEach(([status,days])=>statuses[status]=(statuses[status]||0)+Number(days));});const top=Object.entries(statuses).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))[0];group.querySelector('.cycle-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.cycle-sample').textContent=String(included.length);group.querySelector('.cycle-top-status').textContent=top?top[0]+' ('+top[1].toFixed(2)+'d)':'—';});}
+function updatePrMetrics(){const from=dateFrom?.value||'',to=dateTo?.value||'';document.querySelectorAll('.pr-metric-group').forEach(group=>{const all=[...group.querySelectorAll('.pr-metric-contribution')];const included=all.filter(row=>{const d=row.dataset.prMerged;return(!from||d>=from)&&(!to||d<=to)});const ranked=[...included].sort((a,b)=>Number(b.dataset.metricHours)-Number(a.dataset.metricHours));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.metricHours),0);group.querySelector('.pr-metric-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.pr-metric-sample').textContent=String(included.length);});}
+function dateApply(){if(!dateFrom)return;const from=dateFrom.value,to=dateTo.value,active=Boolean(from||to);let undated=0;document.querySelectorAll('[data-date]').forEach(e=>{const d=e.dataset.date;let hide=false;if(active){if(!d){hide=true;undated++;}else{hide=(from&&d<from)||(to&&d>to);}}e.classList.toggle('date-hidden',hide);});updateCycleMetrics();updatePrMetrics();if(dateNote)dateNote.textContent=active?(undated?undated+' undated records hidden by the time filter':'Time filter active'):'';}
+if(dateFrom){dateFrom.addEventListener('change',dateApply);dateTo.addEventListener('change',dateApply);dateClear.addEventListener('click',()=>{dateFrom.value='';dateTo.value='';dateApply();});updateCycleMetrics();updatePrMetrics();}
 function setChildren(key,open){document.querySelectorAll('.child-row[data-parent="'+CSS.escape(key)+'"]').forEach(r=>r.classList.toggle('collapsed',!open));document.querySelectorAll('.toggle[data-children="'+CSS.escape(key)+'"]').forEach(b=>b.setAttribute('aria-expanded',String(open)));}
 document.querySelectorAll('.toggle[data-children]').forEach(b=>b.onclick=()=>setChildren(b.dataset.children,b.getAttribute('aria-expanded')!=='true'));
 document.querySelectorAll('.expand-all').forEach(b=>b.onclick=()=>{const open=b.dataset.open!=='true';b.dataset.open=String(open);b.textContent=open?'Collapse all children':'Expand all children';b.closest('section').querySelectorAll('.toggle[data-children]').forEach(t=>setChildren(t.dataset.children,open));});'''
@@ -1228,6 +1380,21 @@ def main() -> None:
     team_metrics = {
         name: run_json([
             "metrics", "get", "--snapshot", args.snapshot, "--team", name,
+            "--teams-config", str(args.teams_config),
+        ], args.data_dir)
+        for name in report_teams
+    }
+    team_build_cycle = {
+        name: run_json([
+            "metrics", "build-cycle", "--snapshot", args.snapshot, "--team", name,
+            "--teams-config", str(args.teams_config),
+        ], args.data_dir)
+        for name in report_teams
+    }
+    team_github_pr_metrics = {
+        name: run_json([
+            "metrics", "github-pr", "--snapshot", args.snapshot, "--team", name,
+            "--source-config", str(args.source_config),
             "--teams-config", str(args.teams_config),
         ], args.data_dir)
         for name in report_teams
@@ -1346,11 +1513,8 @@ def main() -> None:
         completion = team_completion[name]
         team_items = [*row.get("in_progress", []), *row.get("ready_for_build", [])]
         feature_rows = [(features[item["jira_key"]], item) for item in team_items]
-        content_summary, health_items, notable = team_summaries(
+        _content_summary, health_items, notable = team_summaries(
             name, row, feature_rows, memberships, snapshot_at, team_metrics[name]
-        )
-        content_summary = authored_summaries.get("teams", {}).get(name, {}).get(
-            "content_summary", content_summary
         )
         issue_urls = {
             node["jira_key"]: node["url"]
@@ -1367,7 +1531,6 @@ def main() -> None:
         health_html = '<ul class="health-list">' + ''.join(
             f'<li>{linked_jira_text(item, issue_urls)}</li>' for item in health_items
         ) + '</ul>'
-        content_html = linked_jira_text(content_summary, issue_urls)
         team_people = [person for person in people if person["display_name"] in team_members[name]]
         activity_html = team_activity_tables(team_details[name], team_people)
         notable_html = "".join(f'<li>{esc(item)}</li>' for item in notable) or '<li>No notable hygiene findings.</li>'
@@ -1380,7 +1543,7 @@ def main() -> None:
             )
             for person in team_people
         ) or '<span class="muted">No configured engineers</span>'
-        team_cards.append(f'''<article class="team-card searchable"><header><div><span class="eyebrow">Team</span><h2>{internal_link(team_href, name)}</h2></div></header><p>{content_html}</p><div class="member-list"><strong>People</strong>{overview_members}</div></article>''')
+        team_cards.append(f'''<article class="team-card searchable"><header><div><span class="eyebrow">Team</span><h2>{internal_link(team_href, name)}</h2></div></header><div class="member-list"><strong>People</strong>{overview_members}</div></article>''')
         detail_cards = "".join(
             feature_card(feature, item, memberships, snapshot_at)
             for feature, item in feature_rows
@@ -1393,8 +1556,17 @@ def main() -> None:
         ) or '<span class="muted">No configured engineers</span>'
         team_body = (
             f'<div class="hero"><span class="eyebrow">Team detail</span><h2>{esc(name)}</h2>'
-            f'<h2>What the work is about</h2><p>{content_html}</p>'
-            f'<h2>Team Health</h2>{health_html}<div>{member_links_detail}</div></div>'
+            f'<h2>Team Health</h2>{health_html}'
+            f'<h3>RAG status</h3>{rag_status_index(slug(name), team_build_cycle.get(name), team_github_pr_metrics.get(name))}'
+            f'<div>{member_links_detail}</div></div>'
+            + accordion(
+                "Build Cycle Time",
+                build_cycle_time_section(team_build_cycle.get(name)),
+            )
+            + accordion(
+                "GitHub PR Metrics",
+                github_pr_metrics_section(team_github_pr_metrics.get(name)),
+            )
             + accordion(
                 "IBR vs non-IBR work",
                 team_work_section(team_work.get(name)),
@@ -1437,8 +1609,7 @@ def main() -> None:
     ) or '<span class="muted">No configured engineers</span>'
     team_cards.append(
         '<article class="team-card searchable"><header><div><span class="eyebrow">Team</span>'
-        '<h2>No Team</h2></div></header><p>Configured engineers without a current report-team '
-        'membership are kept visible here.</p><div class="member-list"><strong>People</strong>'
+        '<h2>No Team</h2></div></header><div class="member-list"><strong>People</strong>'
         f'{no_team_links}</div></article>'
     )
 
@@ -1507,10 +1678,9 @@ def main() -> None:
         )
 
     cards = "".join(feature_card(features[key], items[key], memberships, snapshot_at) for key in sorted(features)) or '<p class="empty">No active IBR items.</p>'
-    freshness = "".join(f'<li><strong>{esc(source["source"])}</strong> {esc(source["scope"])} — {esc(source["observed_at"])}</li>' for source in dashboard["source_freshness"])
     gaps_html = f"<ul>{''.join(f'<li>{esc(gap)}</li>' for gap in gaps)}</ul>" if gaps else '<p>All configured Jira hygiene fields are evaluable for this snapshot.</p>'
     overview = (
-        f'''<section class="app-view active" data-route="/" data-title="Overview"><section class="hero"><span class="eyebrow">Pinned evidence report</span><h1>Weekly Engineering Status</h1><p>Snapshot <code>{esc(dashboard['snapshot_id'])}</code> · generated {esc(datetime.now(UTC).isoformat())}</p><div class="grid"><div class="metric"><strong>{len(items)}</strong>active IBR parents</div><div class="metric"><strong>{len(people)}</strong>engineers loaded</div><div class="metric"><strong>{len(selected_rows)}</strong>report teams</div><div class="metric"><strong>{completion_pct(month_credit, month_total)}%</strong>{esc(current_month)} rolled up ({month_done}/{month_total} dated items done)</div></div><details><summary>Source freshness</summary><ul>{freshness}</ul></details></section>'''
+        '''<section class="app-view active" data-route="/" data-title="Overview">'''
         f'<section><h1>Teams and people</h1><p class="muted">Choose a team or person to open their page.</p><div class="team-grid">{"".join(team_cards)}</div></section>'
         + accordion("Evidence coverage", gaps_html, classes="panel gap")
         + accordion(

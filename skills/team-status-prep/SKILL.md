@@ -50,9 +50,20 @@ Do not render from partial, stale, or remembered data.
 2. Discover teams and people from the new snapshot; never use a hard-coded roster.
 3. Call MCP `get_team_brief(snapshot, team)` for the requested team.
 4. Call MCP `get_metrics(snapshot, team=TEAM)` when flow context is requested.
-5. Call MCP `get_feature(snapshot, issue_key)` only for Features needing explanation.
-6. Call MCP `list_attention` or `get_flag` only when flag lifecycle detail is needed.
-7. Call MCP `get_team(snapshot, team)` only when the compact brief lacks evidence
+5. Call MCP `get_build_cycle_time(snapshot, team)` for the team-detail Build Cycle
+   Time section, including IBR parents, all non-IBR team-assigned issue types, status
+   attribution, and child timing.
+6. Call MCP `get_feature(snapshot, issue_key)` only for Features needing explanation.
+7. Call MCP `get_github_pr_metrics(snapshot, team)` for team pickup/review time,
+   across every configured repository and scoped to PR authors whose configured
+   GitHub identity belongs to the selected team, including top contributing PRs and
+   involved authors/reviewers. Repository configuration never assigns a GitHub record
+   to a team.
+8. Preserve deterministic RAG assessments from configured `rag.rules`. Render each
+   assessment with its configured symbol and color, and provide a stable deep link
+   from Team Health to the exact metric instance. Never invent thresholds.
+9. Call MCP `list_attention` or `get_flag` only when flag lifecycle detail is needed.
+10. Call MCP `get_team(snapshot, team)` only when the compact brief lacks evidence
    required by a follow-up; its complete GitHub delivery list can be large.
 
 Use equivalent CLI commands when MCP is unavailable:
@@ -62,6 +73,11 @@ uv run engintel dashboard get SNAPSHOT --data-dir DATA_DIR --format json
 uv run engintel team brief TEAM --snapshot SNAPSHOT \
   --data-dir DATA_DIR --format json
 uv run engintel metrics get --snapshot SNAPSHOT --team TEAM \
+  --data-dir DATA_DIR --format json
+uv run engintel metrics build-cycle --snapshot SNAPSHOT --team TEAM \
+  --teams-config TEAMS_CONFIG --data-dir DATA_DIR --format json
+uv run engintel metrics github-pr --snapshot SNAPSHOT --team TEAM \
+  --source-config SOURCE_CONFIG --teams-config TEAMS_CONFIG \
   --data-dir DATA_DIR --format json
 ```
 

@@ -69,8 +69,8 @@ without working credentials.
   `GET {api_url}/orgs/{org}/repos?sort=pushed&per_page=100` (paginate) and keep
   those pushed within `initial_lookback_days` (default 90).
 - Propose the filtered list to the user for confirmation — they may drop
-  repositories that are noise or add ones the filter missed. Repository
-  `team_ids` mappings are completed in step 5 once teams exist.
+  repositories that are noise or add ones the filter missed. Repositories define
+  organization-wide collection scope and are not mapped to teams.
 
 ## Step 5 — Discover team rosters and cross-verify GitHub identities
 
@@ -95,8 +95,8 @@ For each team name the user supplied:
    match. Unmatched people keep `github_login: null` with an explicit note.
    **No mapping is written until the user confirms it** — a wrong identity
    mapping silently misattributes delivery evidence.
-4. Map each confirmed repository to the team IDs whose members are active in it
-   and confirm those mappings too.
+4. Confirm that GitHub team attribution will use only these member identity mappings;
+   repository membership or ownership is not a team signal.
 
 ## Step 6 — Derive per-team classification queries
 
@@ -124,7 +124,7 @@ Present the complete picture in one place before writing anything:
 - the IBR board and any additional boards with their roles;
 - the verified custom-field IDs;
 - the derived `team-field-<team-id>` classification queries;
-- the confirmed repository list with team mappings.
+- the confirmed organization-wide repository list.
 
 On approval, write `sources.yaml` and `teams.yaml` (stable lowercase IDs;
 membership `starts_on` set to the confirmation date with

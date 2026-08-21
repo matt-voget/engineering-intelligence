@@ -1,4 +1,22 @@
 schema_version: "1"
+# Optional deterministic report thresholds. Values below amber_at are green.
+rag:
+  green_symbol: "✓"
+  amber_symbol: "▲"
+  red_symbol: "!"
+  rules:
+    - id: example-high-cycle-time
+      label: High cycle time
+      section: build_cycle_time
+      metric: cycle_days
+      amber_at: 14
+      red_at: 30
+      # Optional: ibr_linked or non_ibr.
+      classification: null
+      # Empty means every configured team.
+      team_ids: []
+      # Inactive until the organization confirms these example thresholds.
+      enabled: false
 # A user only needs to supply team names that match Jira team names. The guided
 # onboarding flow in docs/onboarding.md discovers each team's members from Jira,
 # cross-verifies their GitHub logins against repository activity, and proposes

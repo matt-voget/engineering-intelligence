@@ -38,8 +38,10 @@ from engineering_intelligence.portability import PortabilityService
 from engineering_intelligence.presentations.attention import AttentionCollection
 from engineering_intelligence.presentations.team_brief import build_team_brief
 from engineering_intelligence.queries.attention import AttentionQuery
+from engineering_intelligence.queries.build_cycle import BuildCycleTimeQuery
 from engineering_intelligence.queries.dashboard import DashboardQuery
 from engineering_intelligence.queries.feature import FeatureQuery
+from engineering_intelligence.queries.github_pr_metrics import GitHubPullRequestMetricsQuery
 from engineering_intelligence.queries.individual import IndividualQuery
 from engineering_intelligence.queries.metrics import MetricsQuery, resolve_metric_team
 from engineering_intelligence.queries.people import PeopleQuery
@@ -1137,6 +1139,79 @@ def metrics_get(
         if output_format == "json"
         else render_metrics_markdown(view)
     )
+
+
+@metrics_app.command("build-cycle")
+def metrics_build_cycle(
+    snapshot: Annotated[
+        str,
+        typer.Option("--snapshot", help="Snapshot ID or unique snapshot name."),
+    ],
+    team: Annotated[
+        str,
+        typer.Option("--team", help="Configured team ID or display name."),
+    ],
+    teams_config_path: Annotated[
+        Path,
+        typer.Option("--teams-config", exists=True, dir_okay=False),
+    ] = Path("config/teams.example.yaml"),
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Output format; currently json."),
+    ] = "json",
+    data_dir: DataDir = None,
+) -> None:
+    """Render IBR and non-IBR parent Build Cycle Time evidence."""
+    if output_format != "json":
+        raise typer.BadParameter("Expected json", param_hint="--format")
+    paths = runtime_paths(data_dir)
+    upgrade_database(paths.database)
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    view = BuildCycleTimeQuery(sessions).get(
+        snapshot,
+        team,
+        load_yaml_model(teams_config_path, TeamsConfig),
+    )
+    typer.echo(view.model_dump_json(indent=2))
+
+
+@metrics_app.command("github-pr")
+def metrics_github_pr(
+    snapshot: Annotated[
+        str,
+        typer.Option("--snapshot", help="Snapshot ID or unique snapshot name."),
+    ],
+    team: Annotated[
+        str,
+        typer.Option("--team", help="Configured team ID or display name."),
+    ],
+    source_config_path: Annotated[
+        Path,
+        typer.Option("--source-config", exists=True, dir_okay=False),
+    ] = Path("config/sources.example.yaml"),
+    teams_config_path: Annotated[
+        Path,
+        typer.Option("--teams-config", exists=True, dir_okay=False),
+    ] = Path("config/teams.example.yaml"),
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Output format; currently json."),
+    ] = "json",
+    data_dir: DataDir = None,
+) -> None:
+    """Render team GitHub PR pickup and review-time evidence."""
+    if output_format != "json":
+        raise typer.BadParameter("Expected json", param_hint="--format")
+    paths = runtime_paths(data_dir)
+    upgrade_database(paths.database)
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    view = GitHubPullRequestMetricsQuery(sessions).get(
+        snapshot,
+        team,
+        load_yaml_model(source_config_path, SourceConfig),
+        load_yaml_model(teams_config_path, TeamsConfig),
+    )
+    typer.echo(view.model_dump_json(indent=2))
 
 
 @backup_app.command("create")

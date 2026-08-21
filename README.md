@@ -187,8 +187,12 @@ end to end without touching a live installation, its data, or its schedule.
   in scope versus out of scope from an IBR perspective (`portfolio` is accepted as a
   legacy alias). Installation and refresh reject missing or duplicate IBR boards.
 - Use stable lowercase IDs for teams and people. Do not reuse IDs after renames.
-- Repository `team_ids` must refer to explicit team IDs in `teams.yaml`; shared repos
-  may list multiple teams.
+- Repositories are organization-wide collection scope and are never mapped to teams.
+  GitHub team attribution comes only from confirmed member `github_login` identities.
+- Optional `rag.rules` in the teams configuration apply deterministic red, amber, and
+  green thresholds to Build Cycle Time and GitHub PR metric instances. Rules may be
+  organization-wide or limited to selected teams; report links jump directly to each
+  assessed instance.
 - If team-wide Jira classification is desired, add a named query with ID
   `team-field-TEAM_ID`. Empty or absent optional classification scopes do not change
   the IBR workflow.

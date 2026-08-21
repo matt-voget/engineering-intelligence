@@ -116,11 +116,6 @@ class DashboardQuery:
                 github_config,
                 teams_config,
                 _as_utc(snapshot.created_at),
-                (
-                    _as_utc(ibr_state.high_water_mark)
-                    if ibr_state is not None
-                    else _as_utc(snapshot.created_at)
-                ),
             )
 
             rows = []
@@ -300,7 +295,6 @@ class DashboardQuery:
         github_config: GitHubConfig | None,
         teams_config: TeamsConfig,
         evaluated_at: datetime,
-        jira_high_water: datetime,
     ) -> dict[str, tuple[list[HealthFlag], list[SignalEvaluationInput]]]:
         """Evaluate bounded GitHub signals from records valid at the snapshot."""
         results = {
@@ -314,10 +308,16 @@ class DashboardQuery:
             for state in source_states
             if state.source == "github" and state.scope.startswith("repository:")
         }
-        team_aliases = {
-            team.id: {team.name.casefold(), *(alias.casefold() for alias in team.aliases)}
-            for team in teams_config.teams
-        }
+        team_ids_by_login: dict[str, set[str]] = defaultdict(set)
+        for team in teams_config.teams:
+            for member in team.members:
+                if (
+                    member.github_login
+                    and member.active
+                    and member.starts_on <= evaluated_at.date()
+                    and (member.ends_on is None or member.ends_on >= evaluated_at.date())
+                ):
+                    team_ids_by_login[member.github_login.casefold()].add(team.id)
         linked_prs_by_team: dict[str, list[tuple[GitHubRepository, GitHubPullRequest, GitHubPullRequestVersion]]] = defaultdict(list)
         reviews_by_team: dict[str, list[tuple[GitHubReview, GitHubPullRequest]]] = defaultdict(list)
 
@@ -368,91 +368,85 @@ class DashboardQuery:
                     JiraGitHubRelationship.first_seen_at <= high_water,
                 )
             ).all()
-            issue_ids = {relationship.jira_issue_id for relationship in relationships}
-            issue_team_names: dict[str, str] = {}
-            if issue_ids:
-                issue_versions = session.scalars(
-                    select(JiraIssueVersion)
-                    .where(
-                        JiraIssueVersion.issue_id.in_(issue_ids),
-                        JiraIssueVersion.observed_at <= jira_high_water,
-                    )
-                    .order_by(
-                        JiraIssueVersion.issue_id,
-                        JiraIssueVersion.observed_at,
-                    )
-                ).all()
-                for issue_version in issue_versions:
-                    if issue_version.team_name:
-                        issue_team_names[issue_version.issue_id] = issue_version.team_name
-            linked_team_ids: dict[str, set[str]] = defaultdict(set)
-            for relationship in relationships:
-                team_name = issue_team_names.get(relationship.jira_issue_id)
-                if team_name:
-                    for team_id, aliases in team_aliases.items():
-                        if team_name.casefold() in aliases:
-                            linked_team_ids[relationship.github_record_id].add(team_id)
+            linked_pr_ids = {
+                relationship.github_record_id for relationship in relationships
+            }
 
             for pr_id, (pr, version) in prs.items():
                 if version.state.casefold() != "open":
                     continue
-                linked_teams = linked_team_ids.get(pr_id, set())
-                for team_id in linked_teams:
-                    linked_prs_by_team[team_id].append((repository, pr, version))
                 author = (version.author_login or "").casefold()
-                if (
-                    len(repository_config.team_ids) == 1
-                    and not linked_teams
-                    and author
-                    and not author.endswith("[bot]")
-                ):
-                    team_id = repository_config.team_ids[0]
-                    age_days = max(
-                        0,
-                        (evaluated_at.date() - _as_utc(version.source_created_at).date()).days,
-                    )
-                    triggered = age_days >= 7
-                    fingerprint = f"{team_id}:github-attribution:{repository.full_name}#{pr.number}"
-                    flags, evaluations = results.setdefault(team_id, ([], []))
-                    if triggered:
-                        flags.append(
-                            HealthFlag(
-                                fingerprint=fingerprint,
-                                area="github_attribution",
-                                severity=Severity.watch,
-                                title=f"{repository.full_name}#{pr.number} has no Jira attribution",
-                                explanation=(
-                                    f"The open PR is {age_days} days old and has no direct "
-                                    "Jira relationship. This rule only evaluates repositories "
-                                    "mapped exclusively to one team."
+                author_teams = team_ids_by_login.get(author, set())
+                for team_id in author_teams:
+                    linked_prs_by_team[team_id].append((repository, pr, version))
+                if pr_id not in linked_pr_ids:
+                    for team_id in author_teams:
+                        age_days = max(
+                            0,
+                            (
+                                evaluated_at.date()
+                                - _as_utc(version.source_created_at).date()
+                            ).days,
+                        )
+                        triggered = age_days >= 7
+                        fingerprint = (
+                            f"{team_id}:github-attribution:"
+                            f"{repository.full_name}#{pr.number}"
+                        )
+                        flags, evaluations = results.setdefault(team_id, ([], []))
+                        if triggered:
+                            flags.append(
+                                HealthFlag(
+                                    fingerprint=fingerprint,
+                                    area="github_attribution",
+                                    severity=Severity.watch,
+                                    title=(
+                                        f"{repository.full_name}#{pr.number} has no "
+                                        "Jira attribution"
+                                    ),
+                                    explanation=(
+                                        f"The open PR is {age_days} days old and has no "
+                                        "direct Jira relationship. Team attribution "
+                                        "comes from the configured GitHub identity of "
+                                        "the PR author."
+                                    ),
+                                    raised_at=evaluated_at,
+                                    evidence=[
+                                        EvidenceLink(
+                                            label=f"Open PR #{pr.number} in GitHub",
+                                            url=pr.html_url,
+                                            title=version.title,
+                                        )
+                                    ],
+                                )
+                            )
+                        evaluations.append(
+                            SignalEvaluationInput(
+                                definition_key="pull-request-missing-jira-attribution",
+                                definition_version="1.2.0",
+                                scope_type="pull_request",
+                                scope_id=(
+                                    f"{team_id}:{repository.full_name}#{pr.number}"
                                 ),
-                                raised_at=evaluated_at,
-                                evidence=[
-                                    EvidenceLink(
-                                        label=f"Open PR #{pr.number} in GitHub",
-                                        url=pr.html_url,
-                                        title=version.title,
-                                    )
-                                ],
+                                subject_id=pr.id,
+                                dimension="open_days_without_direct_jira_relationship",
+                                condition_met=triggered,
+                                severity="watch" if triggered else None,
+                                confidence="medium",
+                                current_value={
+                                    "days": age_days,
+                                    "jira_relationship_count": 0,
+                                },
+                                sample_size=1,
+                                flag_fingerprint=(
+                                    fingerprint if triggered else None
+                                ),
+                                details={
+                                    "team_id": team_id,
+                                    "repository": repository.full_name,
+                                },
                             )
                         )
-                    evaluations.append(
-                        SignalEvaluationInput(
-                            definition_key="pull-request-missing-jira-attribution",
-                            definition_version="1.0.0",
-                            scope_type="pull_request",
-                            scope_id=f"{repository.full_name}#{pr.number}",
-                            subject_id=pr.id,
-                            dimension="open_days_without_direct_jira_relationship",
-                            condition_met=triggered,
-                            severity="watch" if triggered else None,
-                            confidence="medium",
-                            current_value={"days": age_days, "jira_relationship_count": 0},
-                            sample_size=1,
-                            flag_fingerprint=fingerprint if triggered else None,
-                            details={"team_id": team_id, "repository": repository.full_name},
-                        )
-                    )
 
             reviews = session.scalars(
                 select(GitHubReview).where(
@@ -461,7 +455,8 @@ class DashboardQuery:
                 )
             ).all()
             for review in reviews:
-                for team_id in linked_team_ids.get(review.pull_request_id, set()):
+                reviewer = (review.author_login or "").casefold()
+                for team_id in team_ids_by_login.get(reviewer, set()):
                     reviews_by_team[team_id].append((review, prs[review.pull_request_id][0]))
 
         for team_id, linked_prs in linked_prs_by_team.items():
@@ -488,7 +483,7 @@ class DashboardQuery:
                             severity=Severity.watch,
                             title=f"{repository.full_name}#{pr.number} is aging",
                             explanation=(
-                                f"This Jira-attributed open PR has been open for "
+                                f"This team-authored open PR has been open for "
                                 f"{age_days} days."
                             ),
                             raised_at=evaluated_at,
@@ -498,9 +493,9 @@ class DashboardQuery:
                 evaluations.append(
                     SignalEvaluationInput(
                         definition_key="pull-request-aging-open",
-                        definition_version="1.0.0",
+                        definition_version="1.2.0",
                         scope_type="pull_request",
-                        scope_id=f"{repository.full_name}#{pr.number}",
+                        scope_id=f"{team_id}:{repository.full_name}#{pr.number}",
                         subject_id=pr.id,
                         dimension="open_age_days",
                         condition_met=triggered,
@@ -550,8 +545,9 @@ class DashboardQuery:
                         title="Review load is concentrated",
                         explanation=(
                             f"@{top_reviewer} submitted {top_count} of {len(recent)} "
-                            f"reviews ({share:.0%}) on Jira-attributed team PRs in the "
-                            "last 30 days."
+                            f"reviews ({share:.0%}) across configured repositories in "
+                            "the last 30 days. Team attribution comes from the "
+                            "reviewer's configured GitHub identity."
                         ),
                         raised_at=evaluated_at,
                         evidence=evidence,
@@ -560,7 +556,7 @@ class DashboardQuery:
             evaluations.append(
                 SignalEvaluationInput(
                     definition_key="team-review-load-concentration",
-                    definition_version="1.0.0",
+                    definition_version="1.1.0",
                     scope_type="team",
                     scope_id=team_id,
                     dimension="top_reviewer_share_30d",

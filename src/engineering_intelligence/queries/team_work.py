@@ -382,13 +382,12 @@ class TeamWorkQuery:
             if occurred is None or occurred < list_floor or occurred > snapshot_at:
                 return
             relevant_author = bool(actor_login and actor_login.casefold() in logins)
-            classification, basis, keys, in_population = classify_links(
+            classification, basis, keys, _in_population = classify_links(
                 own_links, inherited_links, high_water_mark
             )
-            # The record belongs on this team's view only when a configured team
-            # member produced it or it links to an issue carrying the team's
-            # Team field; a Jira link alone attributes it to some other team.
-            if not relevant_author and not in_population:
+            # GitHub team attribution comes exclusively from configured member
+            # identities. Jira links classify the work but never assign its team.
+            if not relevant_author:
                 return
             seen_records.add((record_type, record_id))
             records.append(
@@ -506,7 +505,8 @@ class TeamWorkQuery:
             reverse=True,
         )
         message = (
-            "GitHub records within the list window are classified through explicit "
-            "Jira keys, inherited pull-request keys, or configured author identity."
+            "GitHub records within the list window are attributed to this team only "
+            "through configured member usernames. Jira keys classify attributed "
+            "records as IBR-linked or non-IBR but do not assign a team."
         )
         return records, split, True, message
