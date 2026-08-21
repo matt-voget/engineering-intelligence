@@ -1,7 +1,7 @@
 # Agent-led onboarding
 
 This is the playbook an agent follows to configure Engineering Intelligence for a
-new user. The design goal: **the user supplies credentials, their Jira URL, the
+new user. The design goal: **the user supplies credentials, their Jira hostname, the
 IBR board choice, and their team names — the agent discovers everything else and
 proposes it for confirmation.** Never guess; every discovered value is verified
 against the live instance and confirmed by the user before it is written.
@@ -11,9 +11,10 @@ and never ask the user to paste a credential into chat.
 
 ## What the user provides
 
-1. **Jira**: the instance base URL (`https://<org>.atlassian.net`), their
-   Atlassian account email, and an API token exported as the variable named by
-   `jira.token_env` (default `JIRA_API_TOKEN`).
+1. **Jira**: the instance hostname exported as the variable named by
+   `jira.host_env` (default `ATLASSIAN_HOST`), their Atlassian account email,
+   and an API token exported as the variable named by `jira.token_env` (default
+   `ATLASSIAN_API_TOKEN`). A configured `jira.base_url` remains the fallback.
 2. **GitHub**: a personal access token with read access to the organization's
    repositories, exported as the variable named by `github.token_env` (default
    `GITHUB_PAT`).

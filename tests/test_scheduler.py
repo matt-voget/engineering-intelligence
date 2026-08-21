@@ -50,7 +50,7 @@ def test_macos_schedule_install_status_and_uninstall_are_owned(
     assert "find-generic-password" in wrapper_text
     assert "export GITHUB_PAT=" in wrapper_text
     assert "engintel-github-test" in wrapper_text
-    assert "export JIRA_API_TOKEN=" in wrapper_text
+    assert "export ATLASSIAN_API_TOKEN=" in wrapper_text
     assert "engintel-jira-test" in wrapper_text
     assert "engintel refresh run" in wrapper_text
     assert str(tmp_path / "backups") in wrapper_text

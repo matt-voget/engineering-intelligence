@@ -1,11 +1,12 @@
 """Versioned local configuration models."""
 
+import os
 from datetime import date
 from pathlib import Path
 from typing import TypeVar
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -44,9 +45,10 @@ class JiraConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_url: HttpUrl
+    host_env: str = "ATLASSIAN_HOST"
     email: str | None = None
-    email_env: str = "ATLAS_ATLASSIAN_EMAIL"
-    token_env: str = "JIRA_API_TOKEN"
+    email_env: str = "ATLASSIAN_EMAIL"
+    token_env: str = "ATLASSIAN_API_TOKEN"
     team_field_id: str | None = None
     target_date_field_id: str | None = None
     gravitee_customers_field_id: str | None = None
@@ -55,6 +57,17 @@ class JiraConfig(BaseModel):
     collect_accountable_work: bool = False
     boards: list[JiraBoardConfig]
     queries: list[JiraQueryConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _apply_host_environment(self) -> "JiraConfig":
+        configured_host = os.environ.get(self.host_env)
+        if not configured_host:
+            return self
+        value = configured_host.strip().rstrip("/")
+        if "://" not in value:
+            value = f"https://{value}"
+        self.base_url = HttpUrl(value)
+        return self
 
 
 class GitHubRepositoryConfig(BaseModel):

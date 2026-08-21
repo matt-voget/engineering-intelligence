@@ -160,7 +160,8 @@ def setup(
         "next": [
             "Export the Jira and GitHub credential variables named in sources.yaml.",
             (
-                "Set jira.base_url, then let an agent run the guided onboarding in "
+                "Export ATLASSIAN_HOST or set jira.base_url, then let an agent run "
+                "the guided onboarding in "
                 "docs/onboarding.md to discover boards, custom fields, repositories, "
                 "and team rosters — or edit both YAML files by hand, replacing every "
                 "CHANGE_ME value."

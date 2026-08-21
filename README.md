@@ -37,8 +37,9 @@ default variable names in the starter configuration; if you later change the nam
 `sources.yaml`, export the renamed variables instead:
 
 ```bash
-export ATLAS_ATLASSIAN_EMAIL='manager@example.com'
-export JIRA_API_TOKEN='...'
+export ATLASSIAN_EMAIL='manager@example.com'
+export ATLASSIAN_API_TOKEN='...'
+export ATLASSIAN_HOST='example.atlassian.net'
 export GITHUB_PAT='...'
 claude
 ```
@@ -57,7 +58,7 @@ Never display or store credential values.
 
 Claude will create private starter configuration outside the clone and run the
 agent-led onboarding in [`docs/onboarding.md`](docs/onboarding.md): you supply only
-your Jira URL and credentials, pick your IBR board from a discovered list, and name
+your Jira hostname and credentials, pick your IBR board from a discovered list, and name
 your teams — the agent discovers the custom fields, GitHub organization and
 repositories, and team rosters (cross-verifying each member's GitHub username), then
 proposes the complete configuration for your confirmation before writing it. It then
@@ -99,7 +100,7 @@ Edit both YAML files and replace every `CHANGE_ME` value (or let an agent discov
 and propose them via [`docs/onboarding.md`](docs/onboarding.md)). The source file
 defines:
 
-- Jira URL, the IBR board and other boards, optional JQL scopes, and optional custom
+- Jira hostname or fallback URL, the IBR board and other boards, optional JQL scopes, and optional custom
   fields
 - GitHub repositories and their explicit team mappings
 - Environment-variable names used for credentials
@@ -109,11 +110,13 @@ GitHub identities. Secondary memberships are represented by putting the same sta
 person ID in more than one team. Keep the configuration private if identity mappings
 are sensitive.
 
-Export credentials in your shell; the exact variable names come from `sources.yaml`:
+Export credentials and the Jira hostname in your shell; the exact variable names come
+from `sources.yaml`:
 
 ```bash
-export ATLAS_ATLASSIAN_EMAIL='manager@example.com'
-export JIRA_API_TOKEN='...'
+export ATLASSIAN_EMAIL='manager@example.com'
+export ATLASSIAN_API_TOKEN='...'
+export ATLASSIAN_HOST='example.atlassian.net'
 export GITHUB_PAT='...'
 ```
 
@@ -195,6 +198,8 @@ end to end without touching a live installation, its data, or its schedule.
 - Set optional Jira custom-field IDs only after verifying them in your Jira instance.
 - Tokens stay in environment variables. They are never written to YAML, SQLite,
   snapshots, reports, or installation manifests.
+- `ATLASSIAN_HOST` accepts either an Atlassian hostname or a full HTTPS URL and
+  overrides `jira.base_url`; the configured URL remains the fallback.
 
 The checked-in files in [`config/`](config/) are intentionally nonfunctional starter
 templates. Never put an organization's live roster, URLs, account IDs, or secrets in

@@ -1,11 +1,12 @@
 schema_version: "1"
 jira:
-  # The only values a user must supply by hand are base_url and credentials.
+  # The only values a user must supply by hand are the hostname and credentials.
   # Everything below marked "agent-discovered" is filled in by the guided
   # onboarding flow in docs/onboarding.md after the Jira connection works.
   base_url: https://CHANGE_ME.atlassian.net
-  email_env: ATLAS_ATLASSIAN_EMAIL
-  token_env: JIRA_API_TOKEN
+  host_env: ATLASSIAN_HOST
+  email_env: ATLASSIAN_EMAIL
+  token_env: ATLASSIAN_API_TOKEN
   # Agent-discovered: custom-field IDs are looked up from /rest/api/3/field and
   # verified against real issues before being set. Leave null until verified.
   team_field_id: null
