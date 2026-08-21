@@ -74,7 +74,6 @@ class GitHubRepositoryConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     full_name: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
-    team_ids: list[str] = Field(default_factory=list)
 
 
 class GitHubConfig(BaseModel):

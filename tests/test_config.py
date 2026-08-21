@@ -21,11 +21,9 @@ def test_source_example_is_valid() -> None:
     assert config.jira.email_env == "ATLASSIAN_EMAIL"
     assert config.jira.token_env == "ATLASSIAN_API_TOKEN"
     assert config.jira.gravitee_customers_field_id is None
-    repositories = {
-        repository.full_name: set(repository.team_ids)
-        for repository in config.github.repositories
-    }
-    assert repositories == {"CHANGE_ME/CHANGE_ME": {"example-team"}}
+    assert [repository.full_name for repository in config.github.repositories] == [
+        "CHANGE_ME/CHANGE_ME"
+    ]
 
 
 def test_atlassian_host_overrides_configured_base_url(monkeypatch) -> None:

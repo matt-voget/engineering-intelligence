@@ -295,22 +295,22 @@ DASHBOARD_SIGNAL_DEFINITIONS = (
     ),
     SignalDefinitionSpec(
         definition_key="pull-request-missing-jira-attribution",
-        version="1.0.0",
+        version="2.0.0",
         category="data_quality_and_visibility",
         scope_type="pull_request",
         area="github_attribution",
         dimension="open_days_without_direct_jira_relationship",
         title="Open pull request has no Jira attribution",
         description=(
-            "Detect a human-authored open pull request in a repository mapped exclusively "
-            "to one team that is at least seven days old and has no direct Jira relationship."
+            "Detect an open pull request authored by a confirmed team member that is at "
+            "least seven days old and has no direct Jira relationship."
         ),
         comparison_basis="absolute_rule",
         parameters={
             "measure": "open_days_without_direct_jira_relationship",
             "operator": "greater_than_or_equal",
             "value": 7,
-            "repository_team_mapping": "exclusive",
+            "team_mapping": "active_member_github_identity",
             "exclude_authors_ending_with": "[bot]",
         },
         severity_policy={"when_triggered": "watch"},
@@ -320,7 +320,7 @@ DASHBOARD_SIGNAL_DEFINITIONS = (
                 "Some valid engineering work does not require a Jira relationship"
             ],
         },
-        effective_from=datetime(2026, 7, 29, tzinfo=UTC),
+        effective_from=datetime(2026, 8, 20, tzinfo=UTC),
     ),
     SignalDefinitionSpec(
         definition_key="team-review-load-concentration",

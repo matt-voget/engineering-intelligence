@@ -40,4 +40,3 @@ github:
   # and recently active repositories and proposes this list for confirmation.
   repositories:
     - full_name: CHANGE_ME/CHANGE_ME
-      team_ids: [example-team]
