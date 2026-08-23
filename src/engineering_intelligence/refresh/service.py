@@ -1,6 +1,7 @@
 """Deterministic Jira/GitHub refresh, snapshot, flag, receipt, and backup workflow."""
 
 import fcntl
+import json
 import os
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -103,12 +104,11 @@ class RefreshService:
         github_client: Any | None = None,
         started_at: datetime | None = None,
         progress_callback: Callable[[RefreshProgressEvent], None] | None = None,
+        resume: bool = False,
     ) -> RefreshReceipt:
         started_at = started_at or datetime.now(UTC)
         refresh_id = str(uuid4())
-        _organization_payload, organization_hash = canonical_organization_config(
-            teams_config
-        )
+        _organization_payload, organization_hash = canonical_organization_config(teams_config)
         _source_payload, source_hash = canonical_source_config(source_config)
         receipt = RefreshReceipt(
             refresh_id=refresh_id,
@@ -137,6 +137,8 @@ class RefreshService:
             completed_sources=0,
             total_sources=total_sources,
         )
+        completed_before_resume = _completed_progress_sources(paths.root) if resume else set()
+        source_failures: list[str] = []
 
         def publish(
             stage: str,
@@ -171,10 +173,21 @@ class RefreshService:
                 progress_callback(event)
 
         publish("initialization", "running", "Refresh started")
-        if (backup_dir is None) != (backup_passphrase is None):
-            raise ValueError(
-                "Backup requires both a destination directory and a passphrase"
+
+        def skip_completed(source: str) -> bool:
+            if source not in completed_before_resume:
+                return False
+            progress.completed_sources += 1
+            publish(
+                "resume",
+                "completed_source",
+                f"Reused completed source {source}",
+                source=source,
             )
+            return True
+
+        if (backup_dir is None) != (backup_passphrase is None):
+            raise ValueError("Backup requires both a destination directory and a passphrase")
         if backup_retention < 1:
             raise ValueError("Backup retention must be at least 1")
         paths.root.mkdir(parents=True, exist_ok=True)
@@ -216,6 +229,8 @@ class RefreshService:
                     )
                     for board in source_config.jira.boards:
                         source = f"jira:board:{board.id}"
+                        if skip_completed(source):
+                            continue
                         publish(
                             "jira",
                             "running",
@@ -238,6 +253,8 @@ class RefreshService:
                         if not query.enabled:
                             continue
                         source = f"jira:query:{query.id}"
+                        if skip_completed(source):
+                            continue
                         publish(
                             "jira",
                             "running",
@@ -260,28 +277,29 @@ class RefreshService:
                     if collect_accountable_work:
                         query_id = "accountable-active-work"
                         source = f"jira:query:{query_id}"
-                        publish(
-                            "jira",
-                            "running",
-                            "Refreshing active Jira work for the accountable roster",
-                            source=source,
-                        )
-                        run_id = jira_service.ingest_query(
-                            query_id,
-                            _accountable_work_jql(accountable_jira_ids),
-                        )
-                        run = _run_receipt(sessions, run_id, {"query_id": query_id})
-                        receipt.jira_runs.append(run)
+                        if not skip_completed(source):
+                            publish(
+                                "jira",
+                                "running",
+                                "Refreshing active Jira work for the accountable roster",
+                                source=source,
+                            )
+                            run_id = jira_service.ingest_query(
+                                query_id,
+                                _accountable_work_jql(accountable_jira_ids),
+                            )
+                            run = _run_receipt(sessions, run_id, {"query_id": query_id})
+                            receipt.jira_runs.append(run)
+                            progress.completed_sources += 1
+                            publish(
+                                "jira",
+                                "completed_source",
+                                "Completed active Jira work for the accountable roster",
+                                source=source,
+                                records_seen=run["records_seen"],
+                                records_changed=run["records_changed"],
+                            )
                         derived_jira_queries.append(query_id)
-                        progress.completed_sources += 1
-                        publish(
-                            "jira",
-                            "completed_source",
-                            "Completed active Jira work for the accountable roster",
-                            source=source,
-                            records_seen=run["records_seen"],
-                            records_changed=run["records_changed"],
-                        )
 
                     repositories = source_config.github.repositories
                     if repositories:
@@ -297,27 +315,33 @@ class RefreshService:
                             sessions,
                             RawPayloadArchive(paths.raw_archive),
                             active_github_client,
-                            initial_lookback_days=(
-                                source_config.github.initial_lookback_days
-                            ),
+                            initial_lookback_days=(source_config.github.initial_lookback_days),
                             max_pull_requests=(
                                 source_config.github.max_pull_requests_per_repository
                             ),
-                            min_refresh_window_days=(
-                                source_config.github.min_refresh_window_days
-                            ),
+                            min_refresh_window_days=(source_config.github.min_refresh_window_days),
                         )
                         for repository in repositories:
                             source = f"github:{repository.full_name}"
+                            if skip_completed(source):
+                                continue
                             publish(
                                 "github",
                                 "running",
                                 f"Refreshing GitHub repository {repository.full_name}",
                                 source=source,
                             )
-                            run_id = github_service.ingest_repository(
-                                repository.full_name
-                            )
+                            try:
+                                run_id = github_service.ingest_repository(repository.full_name)
+                            except Exception as exc:  # noqa: BLE001 - continue other sources
+                                source_failures.append(f"{source}: {type(exc).__name__}: {exc}")
+                                publish(
+                                    "github",
+                                    "failed_source",
+                                    source_failures[-1],
+                                    source=source,
+                                )
+                                continue
                             run = _run_receipt(
                                 sessions,
                                 run_id,
@@ -334,19 +358,20 @@ class RefreshService:
                                 records_changed=run["records_changed"],
                             )
 
+                    if source_failures:
+                        raise RuntimeError(
+                            f"{len(source_failures)} source(s) failed; rerun with --resume: "
+                            + "; ".join(source_failures)
+                        )
+
                 name = snapshot_name or started_at.strftime("refresh-%Y%m%dT%H%M%SZ")
                 publish("snapshot", "running", f"Creating snapshot {name}")
                 snapshot = SnapshotService(sessions).create(
                     [board.id for board in source_config.jira.boards],
-                    jira_queries=[
-                        query.id
-                        for query in source_config.jira.queries
-                        if query.enabled
-                    ]
+                    jira_queries=[query.id for query in source_config.jira.queries if query.enabled]
                     + derived_jira_queries,
                     github_repositories=[
-                        repository.full_name
-                        for repository in source_config.github.repositories
+                        repository.full_name for repository in source_config.github.repositories
                     ],
                     name=name,
                     created_at=datetime.now(UTC),
@@ -369,9 +394,7 @@ class RefreshService:
                         github_config=source_config.github,
                     )
                 )
-                receipt.flags_recorded = sum(
-                    len(team.flags) for team in dashboard.teams
-                )
+                receipt.flags_recorded = sum(len(team.flags) for team in dashboard.teams)
                 publish(
                     "flags",
                     "completed_stage",
@@ -437,7 +460,9 @@ def _accountable_jira_ids(
 
 
 def _accountable_work_jql(account_ids: list[str]) -> str:
-    quoted = ", ".join(f'"{account_id.replace(chr(34), chr(92) + chr(34))}"' for account_id in account_ids)
+    quoted = ", ".join(
+        f'"{account_id.replace(chr(34), chr(92) + chr(34))}"' for account_id in account_ids
+    )
     return f'assignee in ({quoted}) AND statusCategory != "Done"'
 
 
@@ -525,3 +550,15 @@ def _write_progress(data_root: Path, progress: RefreshProgress) -> None:
     temporary_latest = progress_root / ".latest.tmp"
     temporary_latest.write_text(payload)
     os.replace(temporary_latest, latest)
+
+
+def _completed_progress_sources(data_root: Path) -> set[str]:
+    latest = data_root / "receipts" / "refresh" / "progress" / "latest.json"
+    if not latest.exists():
+        return set()
+    payload = json.loads(latest.read_text())
+    return {
+        event["source"]
+        for event in payload.get("events", [])
+        if event.get("status") == "completed_source" and event.get("source")
+    }

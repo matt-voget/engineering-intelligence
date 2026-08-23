@@ -31,14 +31,18 @@ agent sessions.
   - Evidence: durable progress stopped at 66/347 sources at 20:31:29Z.
   - Finding: GitHub retries HTTP 429/5xx responses but not transport errors;
     refresh aborts on the first repository exception and has no resume command.
-- [ ] Add transport retries and repository-level failure isolation.
-- [ ] Add stale-run detection and source-level resume behavior.
-- [ ] Verify targeted and full tests.
+- [x] Add transport retries and repository-level failure isolation.
+  - GitHub transport exceptions now use the existing bounded exponential backoff.
+  - Repository failures are recorded and the remaining repositories continue.
+- [x] Add stale-run detection and source-level resume behavior.
+  - `engintel refresh run --resume` reuses sources marked complete in the latest
+    durable progress receipt and retries the interrupted/failed source onward.
+- [x] Verify targeted and full tests.
+  - Evidence: Ruff passes; 9 targeted tests and all 118 tests pass.
 - [ ] Resume and complete the live refresh, sending periodic checkpoints.
 - [ ] Generate the terminal receipt/snapshot and report exact source totals.
 
 ## Exact next action
 
-Add failing tests for transient transport errors and continuing/resuming a
-multi-repository refresh, then implement the smallest durable changes that make
-those tests pass.
+Commit and push the resilience changes, then run the live refresh with
+`--resume` and monitor its durable progress receipt through completion.

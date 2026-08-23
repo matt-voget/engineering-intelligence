@@ -14,6 +14,7 @@ from engineering_intelligence.refresh import RefreshService
 from engineering_intelligence.refresh.service import (
     _accountable_jira_ids,
     _accountable_work_jql,
+    _completed_progress_sources,
 )
 from engineering_intelligence.runtime import runtime_paths
 from engineering_intelligence.snapshot_selection import latest_snapshot
@@ -61,7 +62,9 @@ def _source_config() -> SourceConfig:
                 "email": "fixture@example.com",
                 "token_env": "FIXTURE_JIRA_TOKEN",
                 "team_field_id": "customfield_12345",
-                "boards": [{"id": 2168, "name": "IBR", "role": "portfolio"}],  # legacy alias for ibr
+                "boards": [
+                    {"id": 2168, "name": "IBR", "role": "portfolio"}
+                ],  # legacy alias for ibr
             },
             "github": {
                 "api_url": "https://api.github.com",
@@ -135,8 +138,7 @@ def test_accountable_work_scope_uses_active_deduplicated_jira_identities() -> No
 
     assert ids == ["account:tenshin"]
     assert _accountable_work_jql(ids) == (
-        'assignee in ("account:tenshin") '
-        'AND statusCategory != "Done"'
+        'assignee in ("account:tenshin") AND statusCategory != "Done"'
     )
 
 
@@ -171,11 +173,7 @@ def test_refresh_creates_pinned_snapshot_flags_receipt_and_backup(
     assert json.loads(latest.read_text())["refresh_id"] == receipt.refresh_id
     progress = json.loads(
         (
-            paths.root
-            / "receipts"
-            / "refresh"
-            / "progress"
-            / f"{receipt.refresh_id}.json"
+            paths.root / "receipts" / "refresh" / "progress" / f"{receipt.refresh_id}.json"
         ).read_text()
     )
     assert progress["status"] == "completed"
@@ -195,9 +193,7 @@ def test_refresh_creates_pinned_snapshot_flags_receipt_and_backup(
         "complete",
     ]
     completed_source = next(
-        event
-        for event in progress["events"]
-        if event["status"] == "completed_source"
+        event for event in progress["events"] if event["status"] == "completed_source"
     )
     assert completed_source["source"] == "jira:board:2168"
     assert completed_source["records_seen"] == 1
@@ -235,10 +231,39 @@ def test_refresh_failure_is_saved_as_receipt(tmp_path: Path) -> None:
     latest = paths.root / "receipts" / "refresh" / "latest.json"
     assert json.loads(latest.read_text())["status"] == "failed"
     progress = json.loads(
-        (
-            paths.root / "receipts" / "refresh" / "progress" / "latest.json"
-        ).read_text()
+        (paths.root / "receipts" / "refresh" / "progress" / "latest.json").read_text()
     )
     assert progress["status"] == "failed"
     assert progress["events"][-1]["stage"] == "failed"
     assert "fixture source unavailable" in progress["events"][-1]["message"]
+
+
+def test_completed_progress_sources_supports_interrupted_resume(tmp_path: Path) -> None:
+    progress_dir = tmp_path / "receipts" / "refresh" / "progress"
+    progress_dir.mkdir(parents=True)
+    (progress_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "status": "completed_source",
+                        "source": "jira:board:2168",
+                    },
+                    {"status": "running", "source": "github:org/current"},
+                    {
+                        "status": "failed_source",
+                        "source": "github:org/failed",
+                    },
+                    {
+                        "status": "completed_source",
+                        "source": "github:org/done",
+                    },
+                ]
+            }
+        )
+    )
+
+    assert _completed_progress_sources(tmp_path) == {
+        "jira:board:2168",
+        "github:org/done",
+    }

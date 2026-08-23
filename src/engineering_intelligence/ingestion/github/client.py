@@ -120,7 +120,14 @@ class GitHubClient:
     ) -> Any:
         attempt = 0
         while True:
-            response = self._client.get(path, params=params)
+            try:
+                response = self._client.get(path, params=params)
+            except httpx.TransportError:
+                attempt += 1
+                if attempt > self.max_retries:
+                    raise
+                time.sleep(min(2 ** (attempt - 1), 30))
+                continue
             if response.status_code not in {429, 500, 502, 503, 504}:
                 response.raise_for_status()
                 return response.json()

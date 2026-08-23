@@ -154,22 +154,27 @@ def setup(
     for target, template in templates.items():
         shutil.copyfile(template, target)
     upgrade_database(runtime_paths(data_root).database)
-    typer.echo(json.dumps({
-        "status": "ready_for_configuration",
-        "source_config": str(source_target),
-        "teams_config": str(teams_target),
-        "data_dir": str(data_root),
-        "next": [
-            "Export the Jira and GitHub credential variables named in sources.yaml.",
-            (
-                "Set jira.base_url, then let an agent run the guided onboarding in "
-                "docs/onboarding.md to discover boards, custom fields, repositories, "
-                "and team rosters — or edit both YAML files by hand, replacing every "
-                "CHANGE_ME value."
-            ),
-            "Run engintel install with these config paths, then invoke team-status-prep.",
-        ],
-    }, indent=2))
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ready_for_configuration",
+                "source_config": str(source_target),
+                "teams_config": str(teams_target),
+                "data_dir": str(data_root),
+                "next": [
+                    "Export the Jira and GitHub credential variables named in sources.yaml.",
+                    (
+                        "Set jira.base_url, then let an agent run the guided onboarding in "
+                        "docs/onboarding.md to discover boards, custom fields, repositories, "
+                        "and team rosters — or edit both YAML files by hand, replacing every "
+                        "CHANGE_ME value."
+                    ),
+                    "Run engintel install with these config paths, then invoke team-status-prep.",
+                ],
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command()
@@ -238,14 +243,10 @@ def jira_sync(
     upgrade_database(paths.database)
     email, token = jira_credentials(source_config.jira)
     configured_ids = [board.id for board in source_config.jira.boards]
-    configured_queries = {
-        query.id: query for query in source_config.jira.queries if query.enabled
-    }
+    configured_queries = {query.id: query for query in source_config.jira.queries if query.enabled}
     explicit_selection = board_ids is not None or query_ids is not None
     selected_ids = board_ids or ([] if explicit_selection else configured_ids)
-    selected_query_ids = query_ids or (
-        [] if explicit_selection else list(configured_queries)
-    )
+    selected_query_ids = query_ids or ([] if explicit_selection else list(configured_queries))
     unknown = sorted(set(selected_ids) - set(configured_ids))
     if unknown:
         raise typer.BadParameter(f"Boards are not configured: {unknown}", param_hint="--board")
@@ -334,8 +335,7 @@ def github_sync(
     """Archive GitHub pull requests, commits, reviews, and explicit Jira-key links."""
     source_config = load_yaml_model(config_path, SourceConfig)
     configured = {
-        repository.full_name: repository
-        for repository in source_config.github.repositories
+        repository.full_name: repository for repository in source_config.github.repositories
     }
     selected = repositories or list(configured)
     unknown = sorted(set(selected) - set(configured))
@@ -412,9 +412,7 @@ def snapshot_create(
     sessions = session_factory(create_sqlite_engine(paths.database))
     snapshot = SnapshotService(sessions).create(
         [board.id for board in source_config.jira.boards],
-        jira_queries=[
-            query.id for query in source_config.jira.queries if query.enabled
-        ],
+        jira_queries=[query.id for query in source_config.jira.queries if query.enabled],
         github_repositories=[
             repository.full_name for repository in source_config.github.repositories
         ],
@@ -462,6 +460,10 @@ def refresh_run(
         int,
         typer.Option("--backup-retention", min=1, help="Number of managed backups to retain."),
     ] = 7,
+    resume: Annotated[
+        bool,
+        typer.Option("--resume", help="Reuse sources completed by the latest refresh."),
+    ] = False,
     data_dir: DataDir = None,
 ) -> None:
     """Run the complete deterministic refresh workflow and save a receipt."""
@@ -481,6 +483,7 @@ def refresh_run(
         backup_passphrase=passphrase,
         backup_retention=backup_retention,
         progress_callback=_echo_refresh_progress,
+        resume=resume,
     )
     typer.echo(receipt.model_dump_json(indent=2))
     if receipt.status != "completed":
@@ -499,13 +502,7 @@ def refresh_latest(data_dir: DataDir = None) -> None:
 @refresh_app.command("progress")
 def refresh_progress(data_dir: DataDir = None) -> None:
     """Print durable progress for the latest current or completed refresh."""
-    progress = (
-        runtime_paths(data_dir).root
-        / "receipts"
-        / "refresh"
-        / "progress"
-        / "latest.json"
-    )
+    progress = runtime_paths(data_dir).root / "receipts" / "refresh" / "progress" / "latest.json"
     if not progress.exists():
         raise typer.BadParameter("No refresh progress exists", param_hint="--data-dir")
     typer.echo(progress.read_text().rstrip())
@@ -582,9 +579,7 @@ def schedule_install(
     lifecycle = LifecycleService(repository_root(), state_root)
     manifest = lifecycle.load()
     if manifest is None:
-        raise typer.BadParameter(
-            "Install Engineering Intelligence before enabling a schedule"
-        )
+        raise typer.BadParameter("Install Engineering Intelligence before enabling a schedule")
     source_config = load_yaml_model(Path(manifest.source_config), SourceConfig)
     state = SchedulerService(repository_root(), state_root).install(
         Path(manifest.data_dir),
@@ -817,9 +812,7 @@ def team_get(
         jira_base_url=str(source_config.jira.base_url),
     ).get(snapshot, team_identifier, teams_config)
     rendered = (
-        team.model_dump_json(indent=2)
-        if output_format == "json"
-        else render_team_markdown(team)
+        team.model_dump_json(indent=2) if output_format == "json" else render_team_markdown(team)
     )
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -948,9 +941,7 @@ def individual_get(
     if output_format not in {"json", "markdown"}:
         raise typer.BadParameter("Expected json or markdown", param_hint="--format")
     if mode not in {"cached", "smart", "fresh"}:
-        raise typer.BadParameter(
-            "Expected cached, smart, or fresh", param_hint="--mode"
-        )
+        raise typer.BadParameter("Expected cached, smart, or fresh", param_hint="--mode")
     if snapshot is not None and mode == "fresh":
         raise typer.BadParameter(
             "--snapshot cannot be combined with --mode fresh", param_hint="--mode"
@@ -1147,9 +1138,7 @@ def metrics_get(
         date_to=date.fromisoformat(date_to) if date_to else None,
     )
     typer.echo(
-        view.model_dump_json(indent=2)
-        if output_format == "json"
-        else render_metrics_markdown(view)
+        view.model_dump_json(indent=2) if output_format == "json" else render_metrics_markdown(view)
     )
 
 
@@ -1393,9 +1382,7 @@ def uninstall(
     """Remove only recorded agent links; preserve data, backups, and repository."""
     state_root = config_dir or default_config_dir()
     schedule_removed = (
-        SchedulerService(repository_root(), state_root).uninstall()
-        if agents is None
-        else []
+        SchedulerService(repository_root(), state_root).uninstall() if agents is None else []
     )
     selected = _agent_names(agents) if agents else None
     removed = LifecycleService(
