@@ -16,9 +16,11 @@ class GitHubClient:
         *,
         timeout_seconds: float = 30,
         max_retries: int = 3,
+        max_rate_limit_wait_seconds: float = 3700,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.max_retries = max_retries
+        self.max_rate_limit_wait_seconds = max_rate_limit_wait_seconds
         self._client = httpx.Client(
             base_url=api_url.rstrip("/"),
             headers={
@@ -127,6 +129,13 @@ class GitHubClient:
                 if attempt > self.max_retries:
                     raise
                 time.sleep(min(2 ** (attempt - 1), 30))
+                continue
+            if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
+                reset_at = float(response.headers.get("X-RateLimit-Reset", "0"))
+                delay = max(reset_at - time.time() + 1, 1)
+                if delay > self.max_rate_limit_wait_seconds:
+                    response.raise_for_status()
+                time.sleep(delay)
                 continue
             if response.status_code not in {429, 500, 502, 503, 504}:
                 response.raise_for_status()

@@ -33,6 +33,7 @@ agent sessions.
     refresh aborts on the first repository exception and has no resume command.
 - [x] Add transport retries and repository-level failure isolation.
   - GitHub transport exceptions now use the existing bounded exponential backoff.
+  - GitHub primary-rate-limit responses wait for the advertised reset time.
   - Repository failures are recorded and the remaining repositories continue.
 - [x] Add stale-run detection and source-level resume behavior.
   - `engintel refresh run --resume` reuses sources marked complete in the latest
