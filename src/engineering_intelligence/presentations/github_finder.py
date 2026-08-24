@@ -28,6 +28,9 @@ class GitHubFinderRecord(BaseModel):
     commit_count: int | None = None
     review_count: int | None = None
     reviewers: list[str] = Field(default_factory=list)
+    first_reviewed_at: datetime | None = None
+    pickup_hours: float | None = None
+    review_hours: float | None = None
     pull_requests: list[str] = Field(default_factory=list)
     jira_keys: list[str] = Field(default_factory=list)
     jira_urls: dict[str, str] = Field(default_factory=dict)

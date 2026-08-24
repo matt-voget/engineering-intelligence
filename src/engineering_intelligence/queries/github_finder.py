@@ -23,6 +23,7 @@ from engineering_intelligence.presentations.github_finder import (
     GitHubFinderView,
 )
 from engineering_intelligence.queries.dashboard import DashboardQuery, _as_utc
+from engineering_intelligence.queries.github_pr_metrics import _measure
 from engineering_intelligence.snapshots.organization import source_config_for_snapshot
 
 
@@ -95,6 +96,7 @@ class GitHubFinderQuery:
                         GitHubReview.pull_request_id == pull.id,
                         GitHubReview.observed_at <= high_water,
                     )).all())
+                    measurement = _measure(version, reviews)
                     jira_urls = relationships.get(("pull_request", pull.id), {})
                     records.append(GitHubFinderRecord(
                         record_key=f"pull-request:{pull.id}", record_type="pull_request",
@@ -108,6 +110,9 @@ class GitHubFinderQuery:
                         head_ref=version.head_ref, base_ref=version.base_ref,
                         commit_count=commit_counts[pull.id], review_count=len(reviews),
                         reviewers=sorted({r.author_login for r in reviews if r.author_login}, key=str.casefold),
+                        first_reviewed_at=measurement[0] if measurement else None,
+                        pickup_hours=measurement[1] if measurement else None,
+                        review_hours=measurement[2] if measurement else None,
                         jira_keys=sorted(jira_urls), jira_urls=jira_urls,
                     ))
                 if commit_links:

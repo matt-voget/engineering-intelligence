@@ -361,14 +361,24 @@ def test_github_finder_embeds_compact_paged_records_and_controls(generator):
             "merged_at": "2026-08-03T00:00:00Z", "authored_at": None,
             "committed_at": None, "head_ref": "finder", "base_ref": "main",
             "commit_count": 2, "review_count": 1, "reviewers": ["reviewer"],
+            "first_reviewed_at": "2026-08-01T12:00:00Z",
+            "pickup_hours": 12.0, "review_hours": 36.0,
             "pull_requests": [], "jira_keys": ["ENG-1"],
             "jira_urls": {"ENG-1": "https://jira/ENG-1"},
         }],
         "data_quality_notes": ["Pinned evidence."],
-    })
+    }, {"people": [
+        {"github_login": "octocat", "current_teams": ["A2A"]},
+        {"github_login": "reviewer", "current_teams": ["Foundations"]},
+    ]})
     assert 'class="github-finder-table"' in html
     assert 'data-gh-filter="repository"' in html
     assert 'data-gh-filter="reviewer"' in html
+    assert 'data-gh-filter="authorTeam"' in html
+    assert 'data-gh-filter="reviewerTeam"' in html
     assert 'class="column-manager github-column-manager"' in html
     assert 'id="github-finder-data"' in html
     assert "Ship finder" in html and "ENG-1" in html
+    assert "pickupHours" in generator.JS and "PR pickup time" in generator.JS
+    assert "reviewHours" in generator.JS and "PR review time" in generator.JS
+    assert "A2A" in html and "Foundations" in html

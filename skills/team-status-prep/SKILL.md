@@ -13,6 +13,9 @@ directory.
 The GitHub Finder route must contain every snapshot-pinned pull request and associated
 commit in configured repository scope, with combined filters, paging, sorting, and
 independent hide/show/reorder column controls. GitHub Issues are out of scope.
+Author-team and reviewer-team filters must resolve configured member GitHub identities
+at the pinned snapshot; repository scope never implies team ownership. Show sortable
+PR pickup and review duration columns using the team PR metric evidence rules.
 Embed the Engineering Intelligence logo from `assets/engineering-intelligence-logo.png`
 as a data URI, show the generation timestamp in the top navigation, and keep date
 filters local to the table or metric group they affect.

@@ -52,7 +52,11 @@ Create exactly one self-contained HTML single-page app with embedded CSS and Jav
   one Red or Amber cell. Never invent default thresholds. `#/github-finder` provides
   one deduplicated, paged table of every pull request and associated commit pinned in
   configured repository scope. It supports combined text, record type, repository,
-  state, author, reviewer, linked-Jira, and local date filters plus sortable columns.
+  state, author, author-team, reviewer, reviewer-team, linked-Jira, and local date
+  filters plus sortable columns. Team filters resolve authors and reviewers through
+  configured member GitHub identities. Sortable PR pickup-time and review-time columns
+  use the same eligible-review definitions as the team PR metrics and remain empty when
+  the required evidence is unavailable.
   Users can add, remove, and reorder visible GitHub columns independently of the Jira
   finder. GitHub Issues and an independent default-branch commit crawl are out of scope.
 - `#/teams/TEAM` shows workflow, hierarchy, health, hygiene, metrics, Jira/GitHub
