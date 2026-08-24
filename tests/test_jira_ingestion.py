@@ -186,8 +186,8 @@ def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
         gravitee_customers_field_id="customfield_10607",
     )
     first_at = datetime(2026, 7, 28, 16, 0, tzinfo=UTC)
-    service.ingest_board(2168, observed_at=first_at)
-    service.ingest_board(2168, observed_at=first_at + timedelta(minutes=15))
+    first_run_id = service.ingest_board(2168, observed_at=first_at)
+    second_run_id = service.ingest_board(2168, observed_at=first_at + timedelta(minutes=15))
     SnapshotService(sessions).create(
         [2168],
         name="metrics-fixture",
@@ -231,6 +231,21 @@ def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
         assert transitions[0].first_seen_at.replace(tzinfo=UTC) == first_at
         assert transitions[0].last_seen_at.replace(tzinfo=UTC) == first_at
         assert len(client.changelog_requests) == 1
+        first_run = session.get(IngestionRun, first_run_id)
+        second_run = session.get(IngestionRun, second_run_id)
+        assert first_run is not None and second_run is not None
+        assert first_run.request_context["counters"] == {
+            "checked": 3,
+            "new": 3,
+            "updated": 0,
+            "reused": 0,
+        }
+        assert second_run.request_context["counters"] == {
+            "checked": 3,
+            "new": 0,
+            "updated": 0,
+            "reused": 3,
+        }
 
     metrics = MetricsQuery(sessions).get(
         "metrics-fixture",

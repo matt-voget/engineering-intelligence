@@ -216,6 +216,10 @@ def test_refresh_creates_pinned_snapshot_flags_receipt_and_backup(
     )
     assert completed_source["source"] == "jira:board:2168"
     assert completed_source["records_seen"] == 1
+    assert completed_source["records_new"] == 1
+    assert completed_source["records_updated"] == 0
+    assert completed_source["records_reused"] == 0
+    assert "1 issues checked" in completed_source["message"]
     run_root = paths.root / "receipts" / "refresh" / "runs" / receipt.refresh_id
     state = json.loads((run_root / "state.json").read_text())
     assert state["status"] == "completed"

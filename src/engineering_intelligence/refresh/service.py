@@ -75,6 +75,9 @@ class RefreshProgressEvent(BaseModel):
     total_sources: int
     records_seen: int | None = None
     records_changed: int | None = None
+    records_new: int | None = None
+    records_updated: int | None = None
+    records_reused: int | None = None
     message: str
 
 
@@ -222,6 +225,9 @@ class RefreshService:
             source: str | None = None,
             records_seen: int | None = None,
             records_changed: int | None = None,
+            records_new: int | None = None,
+            records_updated: int | None = None,
+            records_reused: int | None = None,
         ) -> None:
             observed_at = datetime.now(UTC)
             event = RefreshProgressEvent(
@@ -237,6 +243,9 @@ class RefreshService:
                 total_sources=progress.total_sources,
                 records_seen=records_seen,
                 records_changed=records_changed,
+                records_new=records_new,
+                records_updated=records_updated,
+                records_reused=records_reused,
                 message=message,
             )
             progress.status = status if status in {"completed", "failed"} else "running"
@@ -345,10 +354,13 @@ class RefreshService:
                         publish(
                             "jira",
                             "completed_source",
-                            f"Completed Jira board {board.id}",
+                            _jira_completion_message(f"Jira board {board.id}", run),
                             source=source,
                             records_seen=run["records_seen"],
                             records_changed=run["records_changed"],
+                            records_new=run["counters"].get("new"),
+                            records_updated=run["counters"].get("updated"),
+                            records_reused=run["counters"].get("reused"),
                         )
                     for query in source_config.jira.queries:
                         if not query.enabled:
@@ -369,10 +381,13 @@ class RefreshService:
                         publish(
                             "jira",
                             "completed_source",
-                            f"Completed Jira query {query.id}",
+                            _jira_completion_message(f"Jira query {query.id}", run),
                             source=source,
                             records_seen=run["records_seen"],
                             records_changed=run["records_changed"],
+                            records_new=run["counters"].get("new"),
+                            records_updated=run["counters"].get("updated"),
+                            records_reused=run["counters"].get("reused"),
                         )
                     derived_jira_queries: list[str] = []
                     if collect_accountable_work:
@@ -395,10 +410,15 @@ class RefreshService:
                             publish(
                                 "jira",
                                 "completed_source",
-                                "Completed active Jira work for the accountable roster",
+                                _jira_completion_message(
+                                    "Active Jira work for the accountable roster", run
+                                ),
                                 source=source,
                                 records_seen=run["records_seen"],
                                 records_changed=run["records_changed"],
+                                records_new=run["counters"].get("new"),
+                                records_updated=run["counters"].get("updated"),
+                                records_reused=run["counters"].get("reused"),
                             )
                         derived_jira_queries.append(query_id)
 
@@ -585,7 +605,17 @@ def _run_receipt(
             "status": run.status,
             "records_seen": run.records_seen,
             "records_changed": run.records_changed,
+            "counters": (run.request_context or {}).get("counters", {}),
         }
+
+
+def _jira_completion_message(label: str, run: dict[str, Any]) -> str:
+    counters = run["counters"]
+    return (
+        f"{label} — {counters.get('checked', 0)} issues checked; "
+        f"{counters.get('new', 0)} new, {counters.get('updated', 0)} updated, "
+        f"{counters.get('reused', 0)} reused"
+    )
 
 
 @contextmanager

@@ -234,7 +234,8 @@ means an explicitly verified compatible source result, never a partial snapshot.
    events, status/watch/resume (`8d1b112` plus the following checkpoint).
 3. **In progress:** Jira issue payloads now compare provider `updated` timestamps,
    preserve scope observations for unchanged issues, and fetch changelogs only for the
-   new/changed delta. Minimal-field enumeration and explicit counters remain.
+   new/changed delta. Checked/new/updated/reused counters are persisted in ingestion
+   receipts and emitted in refresh events. Minimal-field enumeration remains.
 4. Implement GitHub unchanged-PR detail reuse and provider-aware limiter.
 5. Add bounded fetch/apply concurrency and reconciliation mode.
 6. Update the skill and scheduler to use the generic run/watch contract.

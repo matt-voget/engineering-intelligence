@@ -82,6 +82,7 @@ class JiraIngestionService:
 
             seen = 0
             changed = 0
+            counters = {"checked": 0, "new": 0, "updated": 0, "reused": 0}
             seen_issue_ids: set[str] = set()
             changed_issue_ids: set[str] = set()
             frontier_keys: list[str] = []
@@ -94,8 +95,10 @@ class JiraIngestionService:
                 seen_issue_ids.add(str(payload["id"]))
                 frontier_keys.append(payload["key"])
                 with self.sessions.begin() as session:
-                    issue_changed = self._issue_changed(session, payload)
-                    if issue_changed:
+                    change_kind = self._classify_issue(session, payload)
+                    counters["checked"] += 1
+                    counters[change_kind] += 1
+                    if change_kind != "reused":
                         self._record_payload(
                             session,
                             run_id,
@@ -128,6 +131,7 @@ class JiraIngestionService:
                 requested_fields,
                 frontier_keys,
                 seen_issue_ids,
+                counters,
             )
             seen += hierarchy_seen
             changed += hierarchy_changed
@@ -147,6 +151,7 @@ class JiraIngestionService:
                 run.completed_at = datetime.now(UTC)
                 run.records_seen = seen
                 run.records_changed = changed
+                run.request_context = {**run.request_context, "counters": counters}
             return run_id
         except Exception as error:
             with self.sessions.begin() as session:
@@ -184,6 +189,7 @@ class JiraIngestionService:
         try:
             seen = 0
             changed = 0
+            counters = {"checked": 0, "new": 0, "updated": 0, "reused": 0}
             issue_ids: set[str] = set()
             changed_issue_ids: set[str] = set()
             for payload in self.client.iter_jql_issues(
@@ -196,8 +202,10 @@ class JiraIngestionService:
                 issue_ids.add(issue_id)
                 seen += 1
                 with self.sessions.begin() as session:
-                    issue_changed = self._issue_changed(session, payload)
-                    if issue_changed:
+                    change_kind = self._classify_issue(session, payload)
+                    counters["checked"] += 1
+                    counters[change_kind] += 1
+                    if change_kind != "reused":
                         self._record_payload(
                             session,
                             run_id,
@@ -237,6 +245,7 @@ class JiraIngestionService:
                 run.completed_at = datetime.now(UTC)
                 run.records_seen = seen
                 run.records_changed = changed
+                run.request_context = {**run.request_context, "counters": counters}
             return run_id
         except Exception as error:
             with self.sessions.begin() as session:
@@ -326,6 +335,7 @@ class JiraIngestionService:
         requested_fields: list[str],
         frontier_keys: list[str],
         seen_issue_ids: set[str],
+        counters: dict[str, int],
     ) -> tuple[int, int, set[str]]:
         hierarchy_seen = 0
         hierarchy_changed = 0
@@ -345,8 +355,10 @@ class JiraIngestionService:
                     next_frontier.append(payload["key"])
                     hierarchy_seen += 1
                     with self.sessions.begin() as session:
-                        issue_changed = self._issue_changed(session, payload)
-                        if issue_changed:
+                        change_kind = self._classify_issue(session, payload)
+                        counters["checked"] += 1
+                        counters[change_kind] += 1
+                        if change_kind != "reused":
                             self._record_payload(
                                 session,
                                 run_id,
@@ -373,17 +385,19 @@ class JiraIngestionService:
             frontier_keys = next_frontier
         return hierarchy_seen, hierarchy_changed, changed_issue_ids
 
-    def _issue_changed(self, session: Session, payload: dict[str, Any]) -> bool:
+    def _classify_issue(self, session: Session, payload: dict[str, Any]) -> str:
         issue = session.get(JiraIssue, str(payload["id"]))
         if issue is None:
-            return True
+            return "new"
         source_updated_at = parse_datetime((payload.get("fields") or {}).get("updated"))
         if source_updated_at is None or issue.last_source_updated_at is None:
-            return True
+            return "updated"
         persisted = issue.last_source_updated_at
         if persisted.tzinfo is None:
             persisted = persisted.replace(tzinfo=UTC)
-        return persisted.astimezone(UTC) != source_updated_at.astimezone(UTC)
+        if persisted.astimezone(UTC) != source_updated_at.astimezone(UTC):
+            return "updated"
+        return "reused"
 
     @staticmethod
     def _mark_issue_seen(session: Session, issue_id: str, observed_at: datetime) -> None:
