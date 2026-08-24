@@ -1,6 +1,6 @@
 # Data refresh resilience execution plan
 
-**Status:** In progress
+**Status:** Complete
 **Owner:** titan
 **Started:** 2026-08-23
 
@@ -40,10 +40,18 @@ agent sessions.
     durable progress receipt and retries the interrupted/failed source onward.
 - [x] Verify targeted and full tests.
   - Evidence: Ruff passes; 9 targeted tests and all 118 tests pass.
-- [ ] Resume and complete the live refresh, sending periodic checkpoints.
-- [ ] Generate the terminal receipt/snapshot and report exact source totals.
+- [x] Resume and complete the live refresh, sending periodic checkpoints.
+  - Removed the confirmed stale `gravitee-io/gravitee-apim-api-docs` source after
+    it returned 404; Matt approved the scope correction on 2026-08-24.
+  - Evidence: refresh completed with 346/346 configured sources.
+- [x] Generate the terminal receipt/snapshot and report exact source totals.
+  - Receipt: `8ce7d3eb-f10e-440d-aac1-100e3e030a26` (`status: completed`).
+  - Snapshot: `dc2b4a20-20d3-4d36-a7c7-b0858f38b0cb`
+    (`refresh-20260824T015244Z`).
+  - Evidence: 7 teams, 16 people, 19 memberships, 92 active flags, and 16
+    materialized individual summaries.
 
 ## Exact next action
 
-Commit and push the resilience changes, then run the live refresh with
-`--resume` and monitor its durable progress receipt through completion.
+Generate the requested self-contained HTML report from snapshot
+`dc2b4a20-20d3-4d36-a7c7-b0858f38b0cb`.
