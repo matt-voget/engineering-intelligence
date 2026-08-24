@@ -5,16 +5,23 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import html
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "engineering-intelligence-logo.png"
+REPORT_CACHE_VERSION = "1"
+_query_cache_dir: Path | None = None
+_query_cache_context = ""
+_query_cache_rebuild = False
+_query_cache_stats = {"hits": 0, "misses": 0}
 
 
 def esc(value: object) -> str:
@@ -22,13 +29,58 @@ def esc(value: object) -> str:
 
 
 def run_json(args: list[str], data_dir: Path) -> dict:
+    cache_path = _query_cache_path(args)
+    if cache_path is not None and cache_path.exists() and not _query_cache_rebuild:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Invalid report cache entry {cache_path}: {exc}") from exc
+        if cached.get("args") != args or cached.get("version") != REPORT_CACHE_VERSION:
+            raise RuntimeError(f"Mismatched report cache entry {cache_path}")
+        _query_cache_stats["hits"] += 1
+        return cached["payload"]
+    _query_cache_stats["misses"] += 1
+    print(f"report materialization: {' '.join(args[:4])}", file=sys.stderr, flush=True)
     env = os.environ.copy()
     env.setdefault("UV_CACHE_DIR", str(Path(tempfile.gettempdir()) / "engintel-uv-cache"))
     result = subprocess.run(
         ["uv", "run", "engintel", *args, "--data-dir", str(data_dir), "--format", "json"],
         check=True, capture_output=True, text=True, env=env,
     )
-    return json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        envelope = {"version": REPORT_CACHE_VERSION, "args": args, "payload": payload}
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=cache_path.parent, delete=False
+        ) as handle:
+            json.dump(envelope, handle, separators=(",", ":"))
+            temporary_path = Path(handle.name)
+        os.replace(temporary_path, cache_path)
+    return payload
+
+
+def configure_query_cache(
+    cache_dir: Path, source_config: Path, teams_config: Path, *, rebuild: bool = False
+) -> None:
+    global _query_cache_dir, _query_cache_context, _query_cache_rebuild
+    _query_cache_dir = cache_dir
+    _query_cache_context = hashlib.sha256(
+        source_config.read_bytes() + b"\0" + teams_config.read_bytes()
+    ).hexdigest()
+    _query_cache_rebuild = rebuild
+    _query_cache_stats.update(hits=0, misses=0)
+
+
+def _query_cache_path(args: list[str]) -> Path | None:
+    if _query_cache_dir is None:
+        return None
+    key = hashlib.sha256(json.dumps({
+        "version": REPORT_CACHE_VERSION,
+        "context": _query_cache_context,
+        "args": args,
+    }, sort_keys=True).encode()).hexdigest()
+    return _query_cache_dir / f"{key}.json"
 
 
 def link(url: str | None, label: object) -> str:
@@ -1558,10 +1610,26 @@ def main() -> None:
     parser.add_argument("--source-config", type=Path, required=True)
     parser.add_argument("--teams-config", type=Path, required=True)
     parser.add_argument(
+        "--report-cache-dir", type=Path,
+        help="Snapshot-bound derived-view cache (defaults under DATA_DIR/report-cache).",
+    )
+    parser.add_argument(
+        "--rebuild-report-cache", action="store_true",
+        help="Recompute and atomically replace every derived report view.",
+    )
+    parser.add_argument(
         "--summaries-json", type=Path,
         help="Agent-authored natural-language summaries grounded in the pinned evidence.",
     )
     args = parser.parse_args()
+    snapshot_key = hashlib.sha256(args.snapshot.encode()).hexdigest()[:20]
+    cache_dir = args.report_cache_dir or (
+        args.data_dir / "report-cache" / REPORT_CACHE_VERSION / snapshot_key
+    )
+    configure_query_cache(
+        cache_dir, args.source_config, args.teams_config,
+        rebuild=args.rebuild_report_cache,
+    )
     authored_summaries = (
         json.loads(args.summaries_json.read_text(encoding="utf-8"))
         if args.summaries_json else {}
@@ -1934,7 +2002,7 @@ def main() -> None:
         + "".join(individual_detail_sections)
     )
     write_page(args.output, page("Engineering Intelligence", body, datetime.now(UTC)))
-    print(json.dumps({"output": str(args.output.resolve()), "snapshot_id": dashboard["snapshot_id"], "features": len(features), "people": len(people), "team_sections": len(team_detail_sections), "individual_sections": len(people), "gaps": gaps,
+    print(json.dumps({"output": str(args.output.resolve()), "snapshot_id": dashboard["snapshot_id"], "features": len(features), "people": len(people), "team_sections": len(team_detail_sections), "individual_sections": len(people), "report_cache": {"directory": str(cache_dir.resolve()), **_query_cache_stats}, "gaps": gaps,
         "completion": {
             "current_month": current_month,
             "current_month_done": month_done,

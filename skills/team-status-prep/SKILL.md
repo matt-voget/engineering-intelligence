@@ -71,6 +71,13 @@ Do not render from partial, stale, or remembered data.
 
 ## Build the report
 
+The renderer persists successful derived views in a snapshot- and configuration-bound
+report cache under `DATA_DIR/report-cache`. Materialization may be expensive once per
+fresh snapshot, but template-only rerenders must reuse that cache and complete without
+re-querying Jira, GitHub, or recomputing derived views. Cache entries are atomic and
+resumable. A corrupt or mismatched entry is a loud failure; use
+`--rebuild-report-cache` only to deliberately recompute it.
+
 1. Call MCP `get_dashboard(snapshot)` to establish health and active flags.
 2. Discover teams and people from the new snapshot; never use a hard-coded roster.
 3. Call MCP `get_team_brief(snapshot, team)` for the requested team.

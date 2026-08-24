@@ -1,6 +1,7 @@
 """Target-Date completion math for the weekly status report generator."""
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,42 @@ def hierarchy(key: str, *children: str) -> dict:
 def counts(**overrides: int) -> dict:
     base = {"total": 0, "done": 0, "in_progress": 0, "not_started": 0, "unknown": 0}
     return {**base, **overrides}
+
+
+def test_run_json_materializes_then_reuses_snapshot_cache(generator, tmp_path, monkeypatch):
+    source = tmp_path / "sources.yaml"
+    teams = tmp_path / "teams.yaml"
+    source.write_text("github: {}", encoding="utf-8")
+    teams.write_text("teams: []", encoding="utf-8")
+    generator.configure_query_cache(tmp_path / "cache", source, teams)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, '{"value": 42}', "")
+
+    monkeypatch.setattr(generator.subprocess, "run", fake_run)
+    assert generator.run_json(["example", "get"], tmp_path) == {"value": 42}
+    assert generator.run_json(["example", "get"], tmp_path) == {"value": 42}
+    assert len(calls) == 1
+    assert generator._query_cache_stats == {"hits": 1, "misses": 1}
+
+
+def test_run_json_fails_loudly_on_corrupt_cache(generator, tmp_path, monkeypatch):
+    source = tmp_path / "sources.yaml"
+    teams = tmp_path / "teams.yaml"
+    source.write_text("github: {}", encoding="utf-8")
+    teams.write_text("teams: []", encoding="utf-8")
+    generator.configure_query_cache(tmp_path / "cache", source, teams)
+    cache_path = generator._query_cache_path(["example", "get"])
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(
+        generator.subprocess, "run",
+        lambda *args, **kwargs: pytest.fail("corrupt cache must not be silently recomputed"),
+    )
+    with pytest.raises(RuntimeError, match="Invalid report cache entry"):
+        generator.run_json(["example", "get"], tmp_path)
 
 
 def test_done_column_is_the_numerator_per_month(generator):

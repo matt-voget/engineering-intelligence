@@ -36,6 +36,13 @@ unavailable. Never access private notes or 1:1 content.
 
 ## Output
 
+Treat snapshot analysis and HTML rendering as separate phases. Persist every successful
+derived report view in the renderer's snapshot/configuration-bound cache. A fresh
+snapshot materializes these views once; subsequent template or presentation changes
+must render from them without API calls or repeated analytical queries. Writes must be
+atomic, interrupted materialization must resume from completed entries, and corrupt or
+mismatched entries must fail loudly instead of being silently ignored.
+
 Create exactly one self-contained HTML single-page app with embedded CSS and JavaScript:
 
 - `#/` is a four-part landing page: Teams, People, Issue Finder, and GitHub Finder.
