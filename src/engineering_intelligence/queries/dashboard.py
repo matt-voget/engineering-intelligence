@@ -121,11 +121,7 @@ class DashboardQuery:
             rows = []
             for team in teams_config.teams:
                 aliases = {team.name.casefold(), *(alias.casefold() for alias in team.aliases)}
-                team_records = [
-                    record
-                    for alias in aliases
-                    for record in grouped.get(alias, [])
-                ]
+                team_records = [record for alias in aliases for record in grouped.get(alias, [])]
                 rows.append(
                     self._team_row(
                         team.id,
@@ -250,13 +246,11 @@ class DashboardQuery:
                 transitions_by_issue,
                 raised_at,
             )
-            data_quality_flags, data_quality_evaluations = (
-                self._data_quality_signals(
-                    team_id,
-                    work_items,
-                    transitions_by_issue,
-                    raised_at,
-                )
+            data_quality_flags, data_quality_evaluations = self._data_quality_signals(
+                team_id,
+                work_items,
+                transitions_by_issue,
+                raised_at,
             )
             flags.extend(feature_flags)
             flags.extend(history_flags)
@@ -297,10 +291,7 @@ class DashboardQuery:
         evaluated_at: datetime,
     ) -> dict[str, tuple[list[HealthFlag], list[SignalEvaluationInput]]]:
         """Evaluate bounded GitHub signals from records valid at the snapshot."""
-        results = {
-            team.id: ([], [])
-            for team in teams_config.teams
-        }
+        results = {team.id: ([], []) for team in teams_config.teams}
         if github_config is None:
             return results
         states = {
@@ -351,10 +342,7 @@ class DashboardQuery:
                 .join(
                     GitHubPullRequestVersion,
                     (GitHubPullRequestVersion.pull_request_id == GitHubPullRequest.id)
-                    & (
-                        GitHubPullRequestVersion.observed_at
-                        == latest_versions.c.observed_at
-                    ),
+                    & (GitHubPullRequestVersion.observed_at == latest_versions.c.observed_at),
                 )
                 .where(GitHubPullRequest.repository_id == repository.id)
             ).all()
@@ -379,7 +367,7 @@ class DashboardQuery:
                 author_teams = team_ids_by_login.get(author, set())
                 for team_id in author_teams:
                     linked_prs_by_team[team_id].append((repository, pr, version))
-                if pr_id not in linked_pr_ids:
+                if pr_id not in linked_pr_ids and author and not author.endswith("[bot]"):
                     for team_id in author_teams:
                         age_days = max(
                             0,
@@ -423,7 +411,7 @@ class DashboardQuery:
                         evaluations.append(
                             SignalEvaluationInput(
                                 definition_key="pull-request-missing-jira-attribution",
-                                definition_version="1.2.0",
+                                definition_version="2.0.0",
                                 scope_type="pull_request",
                                 scope_id=(
                                     f"{team_id}:{repository.full_name}#{pr.number}"
@@ -580,7 +568,6 @@ class DashboardQuery:
             )
         return results
 
-
     @staticmethod
     def _health_state(
         flags: list[HealthFlag],
@@ -613,9 +600,7 @@ class DashboardQuery:
                 required_source="jira",
                 required_scope=required_scope,
                 observed_at=(
-                    _as_utc(source_state.high_water_mark)
-                    if source_state is not None
-                    else None
+                    _as_utc(source_state.high_water_mark) if source_state is not None else None
                 ),
                 maximum_age_seconds=int(MAXIMUM_IBR_SOURCE_AGE.total_seconds()),
                 age_at_snapshot_seconds=None,
@@ -726,9 +711,7 @@ class DashboardQuery:
                 confidence="high",
                 current_value={"count": value},
                 sample_size=value,
-                flag_fingerprint=(
-                    by_area[area].fingerprint if value == 0 else None
-                ),
+                flag_fingerprint=(by_area[area].fingerprint if value == 0 else None),
                 details={"comparison_basis": "absolute_rule"},
             )
             for definition_key, area, dimension, value in definitions
@@ -755,10 +738,7 @@ class DashboardQuery:
             if active and item.source_updated_at is not None:
                 inactive_days = max(
                     0,
-                    (
-                        evaluated_at.date()
-                        - _as_utc(item.source_updated_at).date()
-                    ).days,
+                    (evaluated_at.date() - _as_utc(item.source_updated_at).date()).days,
                 )
                 triggered = inactive_days >= 14
                 fingerprint = f"{team_id}:stalled-work:{item.jira_key}"
@@ -811,8 +791,7 @@ class DashboardQuery:
                             severity=Severity.watch,
                             title=f"{item.jira_key} has no Jira assignee",
                             explanation=(
-                                f"{item.jira_key} is active but has no current Jira "
-                                "assignee."
+                                f"{item.jira_key} is active but has no current Jira assignee."
                             ),
                             raised_at=evaluated_at,
                             evidence=evidence,
@@ -905,9 +884,7 @@ class DashboardQuery:
             )
             if transition_rule_applies:
                 missing_transitions = not transitions
-                fingerprint = (
-                    f"{team_id}:data-quality-transition:{item.jira_key}"
-                )
+                fingerprint = f"{team_id}:data-quality-transition:{item.jira_key}"
                 if missing_transitions:
                     flags.append(
                         HealthFlag(
@@ -960,9 +937,7 @@ class DashboardQuery:
                     )
                     if value is None
                 ]
-                fingerprint = (
-                    f"{team_id}:data-quality-timing:{item.jira_key}"
-                )
+                fingerprint = f"{team_id}:data-quality-timing:{item.jira_key}"
                 if missing_fields:
                     flags.append(
                         HealthFlag(
@@ -1030,18 +1005,13 @@ class DashboardQuery:
             recent_30 = [
                 transition
                 for transition in transitions
-                if _as_utc(transition.changed_at)
-                >= evaluated_at - timedelta(days=30)
+                if _as_utc(transition.changed_at) >= evaluated_at - timedelta(days=30)
             ]
             regressions = [
-                transition
-                for transition in recent_30
-                if _is_workflow_regression(transition)
+                transition for transition in recent_30 if _is_workflow_regression(transition)
             ]
             regression_triggered = bool(regressions)
-            regression_fingerprint = (
-                f"{team_id}:workflow-regression:{item.jira_key}"
-            )
+            regression_fingerprint = f"{team_id}:workflow-regression:{item.jira_key}"
             if regression_triggered:
                 latest = regressions[-1]
                 flags.append(
@@ -1077,18 +1047,14 @@ class DashboardQuery:
                             {
                                 "from": regressions[-1].from_status_name,
                                 "to": regressions[-1].to_status_name,
-                                "changed_at": _as_utc(
-                                    regressions[-1].changed_at
-                                ).isoformat(),
+                                "changed_at": _as_utc(regressions[-1].changed_at).isoformat(),
                             }
                             if regressions
                             else None
                         ),
                     },
                     sample_size=len(recent_30),
-                    flag_fingerprint=(
-                        regression_fingerprint if regression_triggered else None
-                    ),
+                    flag_fingerprint=(regression_fingerprint if regression_triggered else None),
                     details={"team_id": team_id, "jira_key": item.jira_key},
                 )
             )
@@ -1096,19 +1062,15 @@ class DashboardQuery:
             recent_90 = [
                 transition
                 for transition in transitions
-                if _as_utc(transition.changed_at)
-                >= evaluated_at - timedelta(days=90)
+                if _as_utc(transition.changed_at) >= evaluated_at - timedelta(days=90)
             ]
             entries = Counter(
                 _canonical_status(transition.to_status_name)
                 for transition in recent_90
-                if _canonical_status(transition.to_status_name)
-                in WORKFLOW_STAGE_ORDER
+                if _canonical_status(transition.to_status_name) in WORKFLOW_STAGE_ORDER
             )
             repeated_status, maximum_entries = (
-                max(entries.items(), key=lambda pair: (pair[1], pair[0]))
-                if entries
-                else (None, 0)
+                max(entries.items(), key=lambda pair: (pair[1], pair[0])) if entries else (None, 0)
             )
             cycling_triggered = maximum_entries >= 3
             cycling_fingerprint = f"{team_id}:workflow-cycling:{item.jira_key}"
@@ -1143,9 +1105,7 @@ class DashboardQuery:
                         "status": repeated_status,
                     },
                     sample_size=len(recent_90),
-                    flag_fingerprint=(
-                        cycling_fingerprint if cycling_triggered else None
-                    ),
+                    flag_fingerprint=(cycling_fingerprint if cycling_triggered else None),
                     details={"team_id": team_id, "jira_key": item.jira_key},
                 )
             )
@@ -1212,9 +1172,7 @@ class DashboardQuery:
                             "multiplier": 1.5,
                         },
                         sample_size=len(baseline_values),
-                        flag_fingerprint=(
-                            aging_fingerprint if aging_triggered else None
-                        ),
+                        flag_fingerprint=(aging_fingerprint if aging_triggered else None),
                         details={"team_id": team_id, "jira_key": item.jira_key},
                     )
                 )
@@ -1229,9 +1187,8 @@ class DashboardQuery:
         raised_at: datetime,
     ) -> list[HealthFlag]:
         board_url = f"{self.jira_base_url}/issues/"
-        team_query_url = (
-            f"{self.jira_base_url}/issues/?jql="
-            + quote(f'"Team" = "{team_name}" ORDER BY Rank ASC')
+        team_query_url = f"{self.jira_base_url}/issues/?jql=" + quote(
+            f'"Team" = "{team_name}" ORDER BY Rank ASC'
         )
         evidence = [
             EvidenceLink(label=f"Open {team_name} work in Jira", url=team_query_url),
@@ -1322,9 +1279,7 @@ def _team_stage_baselines(
                 and baseline_start <= ended <= evaluated_at
                 and ended >= started
             ):
-                durations[status].append(
-                    (item.jira_id, (ended - started).total_seconds() / 86400)
-                )
+                durations[status].append((item.jira_id, (ended - started).total_seconds() / 86400))
             status = _canonical_status(transition.to_status_name)
             started = ended
     return durations

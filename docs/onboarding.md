@@ -1,7 +1,7 @@
 # Agent-led onboarding
 
 This is the playbook an agent follows to configure Engineering Intelligence for a
-new user. The design goal: **the user supplies credentials, their Jira URL, the
+new user. The design goal: **the user supplies credentials, their Jira hostname, the
 IBR board choice, and their team names — the agent discovers everything else and
 proposes it for confirmation.** Never guess; every discovered value is verified
 against the live instance and confirmed by the user before it is written.
@@ -11,9 +11,10 @@ and never ask the user to paste a credential into chat.
 
 ## What the user provides
 
-1. **Jira**: the instance base URL (`https://<org>.atlassian.net`), their
-   Atlassian account email, and an API token exported as the variable named by
-   `jira.token_env` (default `JIRA_API_TOKEN`).
+1. **Jira**: the instance hostname exported as the variable named by
+   `jira.host_env` (default `ATLASSIAN_HOST`), their Atlassian account email,
+   and an API token exported as the variable named by `jira.token_env` (default
+   `ATLASSIAN_API_TOKEN`). A configured `jira.base_url` remains the fallback.
 2. **GitHub**: a personal access token with read access to the organization's
    repositories, exported as the variable named by `github.token_env` (default
    `GITHUB_PAT`).
@@ -69,8 +70,9 @@ without working credentials.
   `GET {api_url}/orgs/{org}/repos?sort=pushed&per_page=100` (paginate) and keep
   those pushed within `initial_lookback_days` (default 90).
 - Propose the filtered list to the user for confirmation — they may drop
-  repositories that are noise or add ones the filter missed. Repositories define
-  organization-wide collection scope and are not mapped to teams.
+  repositories that are noise or add ones the filter missed. Repository
+  selection only bounds collection scope. Team ownership is derived
+  from confirmed member `github_login` identities in step 5.
 
 ## Step 5 — Discover team rosters and cross-verify GitHub identities
 
@@ -95,8 +97,10 @@ For each team name the user supplied:
    match. Unmatched people keep `github_login: null` with an explicit note.
    **No mapping is written until the user confirms it** — a wrong identity
    mapping silently misattributes delivery evidence.
-4. Confirm that GitHub team attribution will use only these member identity mappings;
-   repository membership or ownership is not a team signal.
+ 4. Confirm repository coverage independently of team ownership. Repositories
+    determine what GitHub data is collected; an active member's confirmed
+    `github_login` determines which team receives that person's PR, commit, and
+    review evidence. Jira keys classify the evidence but do not assign its team.
 
 ## Step 6 — Derive per-team classification queries
 
@@ -124,7 +128,7 @@ Present the complete picture in one place before writing anything:
 - the IBR board and any additional boards with their roles;
 - the verified custom-field IDs;
 - the derived `team-field-<team-id>` classification queries;
-- the confirmed organization-wide repository list.
+- the confirmed repository collection list;
 
 On approval, write `sources.yaml` and `teams.yaml` (stable lowercase IDs;
 membership `starts_on` set to the confirmation date with

@@ -73,11 +73,7 @@ class TeamQuery:
         with self.sessions() as session:
             snapshot = self.dashboard_query._snapshot(session, snapshot_identifier)
             ibr_state = next(
-                (
-                    state
-                    for state in dashboard.source_freshness
-                    if state.scope == ibr_scope
-                ),
+                (state for state in dashboard.source_freshness if state.scope == ibr_scope),
                 None,
             )
             if ibr_state is None:
@@ -97,33 +93,37 @@ class TeamQuery:
             if version.team_name and version.team_name.casefold() in aliases
         ]
         work_items = [
-            self.dashboard_query._work_item(issue, version)
-            for issue, version in team_records
+            self.dashboard_query._work_item(issue, version) for issue, version in team_records
         ]
         workflow = _workflow(work_items)
         github_records: dict[tuple[str, str, str], GitHubDeliveryRecord] = {}
+        team_logins = {
+            member.github_login.casefold()
+            for member in team.members
+            if member.active and member.github_login
+        }
         blocked: dict[tuple[str, str, str | None], JiraLinkEvidence] = {}
         github_available = False
         for issue, _version in team_records:
             feature = self.feature_query.get(snapshot_identifier, issue.issue_key)
             github_available = github_available or feature.github_delivery.available
             for delivery in feature.github_delivery.records:
+                if not delivery.actor_login or delivery.actor_login.casefold() not in team_logins:
+                    continue
                 github_records[
                     (delivery.record_type, delivery.record_id, delivery.direct_jira_key)
                 ] = delivery
             for link in feature.jira_links:
                 if link.is_blocking_relationship:
-                    blocked[
-                        (link.source_issue_key, link.relationship, link.target_issue_key)
-                    ] = link
+                    blocked[(link.source_issue_key, link.relationship, link.target_issue_key)] = (
+                        link
+                    )
         roster = _roster(team, dashboard.snapshot_created_at.date())
         data_quality = []
         if not roster:
             data_quality.append("No roster members are configured for this team.")
         if team.roster_source.state == "unverified":
-            data_quality.append(
-                "The configured roster has no authoritative membership source."
-            )
+            data_quality.append("The configured roster has no authoritative membership source.")
         elif team.roster_source.starts_on_basis == "first_verified_observation":
             data_quality.append(
                 "Roster start dates represent first verified observation, not confirmed "
@@ -222,8 +222,7 @@ def _workflow(items: list[WorkItem]) -> list[WorkflowColumn]:
         (
             item
             for item in items
-            if item.status.casefold()
-            not in {name.casefold() for name in WORKFLOW_COLUMNS}
+            if item.status.casefold() not in {name.casefold() for name in WORKFLOW_COLUMNS}
         ),
         key=lambda item: (item.status, item.jira_key),
     )

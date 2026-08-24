@@ -70,9 +70,7 @@ class TeamWorkQuery:
             teams_config = organization_config_for_snapshot(snapshot, teams_config)
             team = _team_config(teams_config, team_identifier)
             states = session.scalars(
-                select(SnapshotSourceState).where(
-                    SnapshotSourceState.snapshot_id == snapshot.id
-                )
+                select(SnapshotSourceState).where(SnapshotSourceState.snapshot_id == snapshot.id)
             ).all()
             scope = f"query:team-field-{team.id}"
             team_state = next((s for s in states if s.scope == scope), None)
@@ -98,9 +96,7 @@ class TeamWorkQuery:
 
             version_cache: dict[str, JiraIssueVersion | None] = {}
 
-            def latest_version(
-                issue_id: str, high_water_mark: datetime
-            ) -> JiraIssueVersion | None:
+            def latest_version(issue_id: str, high_water_mark: datetime) -> JiraIssueVersion | None:
                 if issue_id not in version_cache:
                     version_cache[issue_id] = session.scalar(
                         select(JiraIssueVersion)
@@ -142,11 +138,7 @@ class TeamWorkQuery:
                 return result
 
             github_high_water = max(
-                (
-                    _as_utc(state.high_water_mark)
-                    for state in states
-                    if state.source == "github"
-                ),
+                (_as_utc(state.high_water_mark) for state in states if state.source == "github"),
                 default=None,
             )
 
@@ -183,8 +175,7 @@ class TeamWorkQuery:
                 population = list(
                     session.scalars(
                         select(JiraScopeObservation.issue_id).where(
-                            JiraScopeObservation.ingestion_run_id
-                            == team_state.ingestion_run_id
+                            JiraScopeObservation.ingestion_run_id == team_state.ingestion_run_id
                         )
                     )
                 )
@@ -195,9 +186,7 @@ class TeamWorkQuery:
                         continue
                     active = (version.status_category or "").casefold() != "done"
                     updated = (
-                        _as_utc(version.source_updated_at)
-                        if version.source_updated_at
-                        else None
+                        _as_utc(version.source_updated_at) if version.source_updated_at else None
                     )
                     if (
                         not include_all_jira
@@ -262,9 +251,7 @@ class TeamWorkQuery:
                     ),
                     reverse=True,
                 )
-                jira_message = (
-                    f"{len(population)} issues carry this team in the Jira Team field."
-                )
+                jira_message = f"{len(population)} issues carry this team in the Jira Team field."
             else:
                 jira_message = (
                     f"This snapshot has no pinned {scope} source; run a refresh with "
@@ -272,16 +259,14 @@ class TeamWorkQuery:
                 )
                 notes.append(jira_message)
 
-            github_records, github_split, github_available, github_message = (
-                self._github(
-                    session,
-                    states,
-                    team,
-                    snapshot_at,
-                    classify_issue,
-                    set(population) if jira_available else set(),
-                    notes,
-                )
+            github_records, github_split, github_available, github_message = self._github(
+                session,
+                states,
+                team,
+                snapshot_at,
+                classify_issue,
+                set(population) if jira_available else set(),
+                notes,
             )
 
             notes.append(
@@ -416,8 +401,8 @@ class TeamWorkQuery:
             classification, basis, keys, _in_population = classify_links(
                 own_links, inherited_links, high_water_mark
             )
-            # GitHub team attribution comes exclusively from configured member
-            # identities. Jira links classify the work but never assign its team.
+            # Team ownership is identity-based. Jira relationships classify the
+            # member's work, but never assign another person's work to the team.
             if not relevant_author:
                 return
             seen_records.add((record_type, record_id))

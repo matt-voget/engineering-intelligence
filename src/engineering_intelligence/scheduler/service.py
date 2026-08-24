@@ -37,7 +37,7 @@ class SchedulerState(BaseModel):
     github_keychain_account: str | None = None
     jira_keychain_service: str | None = None
     jira_keychain_account: str | None = None
-    jira_token_env: str = "JIRA_API_TOKEN"
+    jira_token_env: str = "ATLASSIAN_API_TOKEN"
     mode: str = "incremental"
 
 
@@ -77,7 +77,7 @@ class SchedulerService:
         github_keychain_account: str | None = None,
         jira_keychain_service: str | None = None,
         jira_keychain_account: str | None = None,
-        jira_token_env: str = "JIRA_API_TOKEN",
+        jira_token_env: str = "ATLASSIAN_API_TOKEN",
         installed_at: datetime | None = None,
         mode: Literal["incremental", "reconcile", "full"] = "incremental",
     ) -> SchedulerState:

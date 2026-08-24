@@ -34,7 +34,7 @@ If setup is missing or incomplete:
 3. Run `uv run engintel setup`. This creates private starter YAML and initializes the
    database outside the clone by default.
 4. Run the agent-led onboarding in `docs/onboarding.md`: the user supplies only the
-   Jira base URL, credentials, the IBR board choice, and their team names; the agent
+   Jira hostname, credentials, the IBR board choice, and their team names; the agent
    discovers boards, custom-field IDs, the GitHub organization and repositories, and
    team rosters with cross-verified GitHub identities, then proposes the complete
    configuration for confirmation. Never write a discovered value the user has not

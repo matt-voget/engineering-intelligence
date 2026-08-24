@@ -22,13 +22,13 @@ def test_runtime_paths_are_contained(tmp_path: Path) -> None:
 
 
 def test_credentials_use_named_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JIRA_API_TOKEN", "test-token")
+    monkeypatch.setenv("ATLASSIAN_API_TOKEN", "test-token")
 
     assert jira_credentials(jira_config()) == ("owner@example.com", "test-token")
 
 
 def test_token_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
+    monkeypatch.delenv("ATLASSIAN_API_TOKEN", raising=False)
 
-    with pytest.raises(ValueError, match="JIRA_API_TOKEN"):
+    with pytest.raises(ValueError, match="ATLASSIAN_API_TOKEN"):
         jira_credentials(jira_config())
