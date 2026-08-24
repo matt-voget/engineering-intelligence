@@ -49,7 +49,13 @@ class JiraIngestionService:
         self.hierarchy_max_depth = hierarchy_max_depth
         self.hierarchy_batch_size = hierarchy_batch_size
 
-    def ingest_board(self, board_id: int, *, observed_at: datetime | None = None) -> str:
+    def ingest_board(
+        self,
+        board_id: int,
+        *,
+        observed_at: datetime | None = None,
+        force_refresh: bool = False,
+    ) -> str:
         observed_at = observed_at or datetime.now(UTC)
         run_id = str(uuid4())
         with self.sessions.begin() as session:
@@ -88,7 +94,9 @@ class JiraIngestionService:
             changed_issue_ids: set[str] = set()
             frontier_keys: list[str] = []
             requested_fields = self._requested_fields(configuration)
-            supports_delta_hydration = hasattr(self.client, "iter_issue_details")
+            supports_delta_hydration = (
+                hasattr(self.client, "iter_issue_details") and not force_refresh
+            )
             board_fields = self._membership_fields() if supports_delta_hydration else requested_fields
             board_payloads = self.client.iter_board_issues(board_id, fields=board_fields)
             for payload, change_kind in self._classified_payloads(
@@ -101,7 +109,7 @@ class JiraIngestionService:
                 with self.sessions.begin() as session:
                     counters["checked"] += 1
                     counters[change_kind] += 1
-                    if change_kind != "reused":
+                    if force_refresh or change_kind != "reused":
                         self._record_payload(
                             session,
                             run_id,
@@ -135,6 +143,7 @@ class JiraIngestionService:
                 frontier_keys,
                 seen_issue_ids,
                 counters,
+                force_refresh,
             )
             seen += hierarchy_seen
             changed += hierarchy_changed
@@ -171,6 +180,7 @@ class JiraIngestionService:
         jql: str,
         *,
         observed_at: datetime | None = None,
+        force_refresh: bool = False,
     ) -> str:
         """Archive and normalize one explicitly configured named JQL scope."""
         observed_at = observed_at or datetime.now(UTC)
@@ -196,7 +206,9 @@ class JiraIngestionService:
             issue_ids: set[str] = set()
             changed_issue_ids: set[str] = set()
             requested_fields = self._requested_fields({})
-            supports_delta_hydration = hasattr(self.client, "iter_issue_details")
+            supports_delta_hydration = (
+                hasattr(self.client, "iter_issue_details") and not force_refresh
+            )
             query_fields = self._membership_fields() if supports_delta_hydration else requested_fields
             query_payloads = self.client.iter_jql_issues(jql, fields=query_fields)
             for payload, change_kind in self._classified_payloads(
@@ -211,7 +223,7 @@ class JiraIngestionService:
                 with self.sessions.begin() as session:
                     counters["checked"] += 1
                     counters[change_kind] += 1
-                    if change_kind != "reused":
+                    if force_refresh or change_kind != "reused":
                         self._record_payload(
                             session,
                             run_id,
@@ -342,6 +354,7 @@ class JiraIngestionService:
         frontier_keys: list[str],
         seen_issue_ids: set[str],
         counters: dict[str, int],
+        force_refresh: bool,
     ) -> tuple[int, int, set[str]]:
         hierarchy_seen = 0
         hierarchy_changed = 0
@@ -364,7 +377,7 @@ class JiraIngestionService:
                         change_kind = self._classify_issue(session, payload)
                         counters["checked"] += 1
                         counters[change_kind] += 1
-                        if change_kind != "reused":
+                        if force_refresh or change_kind != "reused":
                             self._record_payload(
                                 session,
                                 run_id,

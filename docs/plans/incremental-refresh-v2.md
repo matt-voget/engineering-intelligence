@@ -240,8 +240,10 @@ means an explicitly verified compatible source result, never a partial snapshot.
    GitHub delta counters are persisted, rate-limit/retry waits emit generic events,
    and shared provider request limiters enforce Jira 2 / GitHub 4 defaults.
 5. **In progress:** GitHub repositories run through four bounded workers with serialized
-   durable progress and aggregated failures. Jira cross-scope planning and reconcile
-   mode remain before Jira source workers can safely run concurrently.
+   durable progress and aggregated failures. Explicit incremental/reconcile/full modes
+   are persisted and resume-compatible; reconcile/full re-read unchanged details and
+   changelogs idempotently. Jira cross-scope planning remains before Jira sources can
+   safely run concurrently.
 6. Update the skill and scheduler to use the generic run/watch contract.
 7. Run fault injection and live before/after benchmarks; tune safe defaults.
 8. Resume the report refresh through the new path, render, validate, and deliver.

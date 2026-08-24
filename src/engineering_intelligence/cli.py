@@ -7,7 +7,7 @@ import tempfile
 import time
 from datetime import date
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 import typer
 
@@ -498,6 +498,10 @@ def refresh_run(
         str | None,
         typer.Option("--resume-id", help="Resume a compatible durable run by ID."),
     ] = None,
+    mode: Annotated[
+        Literal["incremental", "reconcile", "full"],
+        typer.Option("--mode", help="Refresh strategy."),
+    ] = "incremental",
     data_dir: DataDir = None,
 ) -> None:
     """Run the complete deterministic refresh workflow and save a receipt."""
@@ -519,6 +523,7 @@ def refresh_run(
         progress_callback=_echo_refresh_progress,
         resume=resume,
         resume_refresh_id=resume_id,
+        mode=mode,
     )
     typer.echo(receipt.model_dump_json(indent=2))
     if receipt.status != "completed":
@@ -536,6 +541,10 @@ def refresh_resume(
         Path,
         typer.Option("--teams-config", exists=True, dir_okay=False),
     ] = Path("config/teams.example.yaml"),
+    mode: Annotated[
+        Literal["incremental", "reconcile", "full"],
+        typer.Option("--mode", help="Must match the original run mode."),
+    ] = "incremental",
     data_dir: DataDir = None,
 ) -> None:
     """Resume only incomplete tasks from a compatible durable run manifest."""
@@ -545,6 +554,7 @@ def refresh_resume(
         load_yaml_model(teams_config_path, TeamsConfig),
         progress_callback=_echo_refresh_progress,
         resume_refresh_id=refresh_id,
+        mode=mode,
     )
     typer.echo(receipt.model_dump_json(indent=2))
     if receipt.status != "completed":

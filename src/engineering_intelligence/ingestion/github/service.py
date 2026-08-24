@@ -51,6 +51,7 @@ class GitHubIngestionService:
         full_name: str,
         *,
         observed_at: datetime | None = None,
+        force_refresh: bool = False,
     ) -> str:
         observed_at = observed_at or datetime.now(UTC)
         run_id = str(uuid4())
@@ -103,14 +104,14 @@ class GitHubIngestionService:
                     change_kind = self._classify_pull_request(session, full_name, pull)
                     counters["checked"] += 1
                     counters[change_kind] += 1
-                    if change_kind == "reused":
+                    if change_kind == "reused" and not force_refresh:
                         existing = session.get(
                             GitHubPullRequest,
                             f"{full_name}#{pull['number']}",
                         )
                         assert existing is not None
                         existing.last_seen_at = observed_at
-                if change_kind == "reused":
+                if change_kind == "reused" and not force_refresh:
                     seen += 1
                     continue
                 commits = list(

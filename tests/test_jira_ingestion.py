@@ -310,12 +310,15 @@ def test_incremental_board_scan_hydrates_only_changed_issue_details(tmp_path: Pa
 
     service.ingest_board(2168)
     service.ingest_board(2168)
+    service.ingest_board(2168, force_refresh=True)
 
     assert client.board_field_requests == [
         ["updated", "parent", "subtasks"],
         ["updated", "parent", "subtasks"],
+        service._requested_fields(client.board),
     ]
     assert client.detail_requests == [["100001"]]
+    assert len(client.changelog_requests) == 2
 
 
 def test_changed_issue_creates_a_new_version(tmp_path: Path) -> None:

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -49,6 +49,7 @@ class RefreshReceipt(BaseModel):
     schema_version: str = "1"
     refresh_id: str
     status: str
+    mode: str = "incremental"
     started_at: datetime
     completed_at: datetime
     data_dir: str
@@ -114,6 +115,7 @@ class RefreshRunState(BaseModel):
     schema_version: str = "2"
     refresh_id: str
     status: str
+    mode: str = "incremental"
     started_at: datetime
     updated_at: datetime
     lease_expires_at: datetime
@@ -144,6 +146,7 @@ class RefreshService:
         progress_callback: Callable[[RefreshProgressEvent], None] | None = None,
         resume: bool = False,
         resume_refresh_id: str | None = None,
+        mode: Literal["incremental", "reconcile", "full"] = "incremental",
     ) -> RefreshReceipt:
         started_at = started_at or datetime.now(UTC)
         refresh_id = str(uuid4())
@@ -152,6 +155,7 @@ class RefreshService:
         receipt = RefreshReceipt(
             refresh_id=refresh_id,
             status="running",
+            mode=mode,
             started_at=started_at,
             completed_at=started_at,
             data_dir=str(paths.root),
@@ -180,6 +184,10 @@ class RefreshService:
                 raise ValueError("Cannot resume: source configuration has changed")
             if run_state.organization_config_hash != organization_hash:
                 raise ValueError("Cannot resume: organization configuration has changed")
+            if run_state.mode != mode:
+                raise ValueError(
+                    f"Cannot resume: run mode is {run_state.mode}, requested mode is {mode}"
+                )
             if [task.source for task in run_state.tasks] != planned_sources:
                 raise ValueError("Cannot resume: planned source manifest has changed")
             refresh_id = run_state.refresh_id
@@ -190,6 +198,7 @@ class RefreshService:
             run_state = RefreshRunState(
                 refresh_id=refresh_id,
                 status="planned",
+                mode=mode,
                 started_at=started_at,
                 updated_at=started_at,
                 lease_expires_at=started_at + timedelta(seconds=30),
@@ -289,7 +298,7 @@ class RefreshService:
             if progress_callback is not None:
                 progress_callback(event)
 
-        publish("initialization", "running", "Refresh started")
+        publish("initialization", "running", f"{mode.capitalize()} refresh started")
 
         def skip_completed(source: str) -> bool:
             if source not in completed_before_resume:
@@ -359,7 +368,10 @@ class RefreshService:
                             f"Refreshing Jira board {board.id}",
                             source=source,
                         )
-                        run_id = jira_service.ingest_board(board.id)
+                        run_id = jira_service.ingest_board(
+                            board.id,
+                            force_refresh=mode != "incremental",
+                        )
                         run = _run_receipt(sessions, run_id, {"board_id": board.id})
                         receipt.jira_runs.append(run)
                         progress.completed_sources += 1
@@ -386,7 +398,11 @@ class RefreshService:
                             f"Refreshing Jira query {query.id}",
                             source=source,
                         )
-                        run_id = jira_service.ingest_query(query.id, query.jql)
+                        run_id = jira_service.ingest_query(
+                            query.id,
+                            query.jql,
+                            force_refresh=mode != "incremental",
+                        )
                         run = _run_receipt(sessions, run_id, {"query_id": query.id})
                         receipt.jira_runs.append(run)
                         progress.completed_sources += 1
@@ -415,6 +431,7 @@ class RefreshService:
                             run_id = jira_service.ingest_query(
                                 query_id,
                                 _accountable_work_jql(accountable_jira_ids),
+                                force_refresh=mode != "incremental",
                             )
                             run = _run_receipt(sessions, run_id, {"query_id": query_id})
                             receipt.jira_runs.append(run)
@@ -482,6 +499,7 @@ class RefreshService:
                                 executor.submit(
                                     github_service.ingest_repository,
                                     repository.full_name,
+                                    force_refresh=mode != "incremental",
                                 ): repository
                                 for repository in pending_repositories
                             }

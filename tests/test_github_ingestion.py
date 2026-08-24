@@ -264,6 +264,17 @@ def test_github_ingestion_is_idempotent_and_links_explicit_jira_keys(
         assert session.scalar(select(func.count()).select_from(GitHubPullRequestVersion)) == 2
     assert client.commit_requests == 2
     assert client.review_requests == 2
+    reconcile_run_id = service.ingest_repository(
+        "gravitee-io/example",
+        observed_at=later,
+        force_refresh=True,
+    )
+    with sessions() as session:
+        assert session.get(IngestionRun, reconcile_run_id).request_context["counters"][
+            "reused"
+        ] == 1
+    assert client.commit_requests == 3
+    assert client.review_requests == 3
 
     OrganizationService(sessions).apply(
         TeamsConfig.model_validate(

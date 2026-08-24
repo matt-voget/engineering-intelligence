@@ -205,6 +205,7 @@ def test_refresh_creates_pinned_snapshot_flags_receipt_and_backup(
     )
 
     assert receipt.status == "completed"
+    assert receipt.mode == "incremental"
     assert receipt.snapshot_name == "refresh-fixture"
     assert receipt.organization_config_hash
     assert receipt.source_config_hash
