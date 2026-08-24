@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 from engineering_intelligence.ingestion.github.client import GitHubClient
 
@@ -97,3 +98,67 @@ def test_without_min_window_max_records_caps_immediately() -> None:
             )
         ]
     assert numbers == [1, 2, 3, 4, 5]
+
+
+def test_transport_errors_are_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.RemoteProtocolError("server disconnected")
+        return httpx.Response(200, json={"full_name": "gravitee-io/example"})
+
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    with GitHubClient(
+        "https://api.github.com",
+        "token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        repository = client.get_repository("gravitee-io/example")
+
+    assert repository["full_name"] == "gravitee-io/example"
+    assert attempts == 3
+
+
+def test_primary_rate_limit_waits_for_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+    events: list[dict[str, object]] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(
+                403,
+                headers={
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": "110",
+                },
+                json={"message": "API rate limit exceeded"},
+            )
+        return httpx.Response(200, json={"full_name": "gravitee-io/example"})
+
+    monkeypatch.setattr("time.time", lambda: 100)
+    monkeypatch.setattr("time.sleep", sleeps.append)
+    with GitHubClient(
+        "https://api.github.com",
+        "token",
+        transport=httpx.MockTransport(handler),
+        event_callback=events.append,
+    ) as client:
+        repository = client.get_repository("gravitee-io/example")
+
+    assert repository["full_name"] == "gravitee-io/example"
+    assert attempts == 2
+    assert sleeps == [11]
+    assert events == [
+        {
+            "provider": "github",
+            "kind": "rate_limit_wait",
+            "message": "GitHub rate limit exhausted; resuming in 11s",
+            "delay_seconds": 11,
+        }
+    ]

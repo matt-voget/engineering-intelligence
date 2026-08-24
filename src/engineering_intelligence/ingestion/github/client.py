@@ -1,11 +1,13 @@
 """Small read-only GitHub REST client with bounded pagination."""
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from typing import Any, Self
 
 import httpx
+
+from engineering_intelligence.ingestion.limiter import RequestLimiter
 
 
 class GitHubClient:
@@ -16,9 +18,15 @@ class GitHubClient:
         *,
         timeout_seconds: float = 30,
         max_retries: int = 3,
+        max_rate_limit_wait_seconds: float = 3700,
         transport: httpx.BaseTransport | None = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+        limiter: RequestLimiter | None = None,
     ) -> None:
         self.max_retries = max_retries
+        self.max_rate_limit_wait_seconds = max_rate_limit_wait_seconds
+        self.event_callback = event_callback
+        self.limiter = limiter or RequestLimiter(1)
         self._client = httpx.Client(
             base_url=api_url.rstrip("/"),
             headers={
@@ -120,7 +128,29 @@ class GitHubClient:
     ) -> Any:
         attempt = 0
         while True:
-            response = self._client.get(path, params=params)
+            try:
+                with self.limiter.slot():
+                    response = self._client.get(path, params=params)
+            except httpx.TransportError:
+                attempt += 1
+                if attempt > self.max_retries:
+                    raise
+                delay = min(2 ** (attempt - 1), 30)
+                self._emit("retrying", f"GitHub transport retry {attempt} in {delay}s", delay)
+                time.sleep(delay)
+                continue
+            if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
+                reset_at = float(response.headers.get("X-RateLimit-Reset", "0"))
+                delay = max(reset_at - time.time() + 1, 1)
+                if delay > self.max_rate_limit_wait_seconds:
+                    response.raise_for_status()
+                self._emit(
+                    "rate_limit_wait",
+                    f"GitHub rate limit exhausted; resuming in {delay:.0f}s",
+                    delay,
+                )
+                time.sleep(delay)
+                continue
             if response.status_code not in {429, 500, 502, 503, 504}:
                 response.raise_for_status()
                 return response.json()
@@ -129,4 +159,20 @@ class GitHubClient:
                 response.raise_for_status()
             retry_after = response.headers.get("Retry-After")
             delay = min(float(retry_after) if retry_after else 2 ** (attempt - 1), 30)
+            self._emit(
+                "retrying",
+                f"GitHub HTTP {response.status_code}; retry {attempt} in {delay:.0f}s",
+                delay,
+            )
             time.sleep(delay)
+
+    def _emit(self, kind: str, message: str, delay_seconds: float) -> None:
+        if self.event_callback is not None:
+            self.event_callback(
+                {
+                    "provider": "github",
+                    "kind": kind,
+                    "message": message,
+                    "delay_seconds": delay_seconds,
+                }
+            )

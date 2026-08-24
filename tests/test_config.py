@@ -26,6 +26,22 @@ def test_source_example_is_valid() -> None:
     ]
 
 
+def test_legacy_repository_team_ids_are_ignored() -> None:
+    repository = SourceConfig.model_validate({
+        "jira": {
+            "base_url": "https://example.atlassian.net",
+            "boards": [{"id": 1, "name": "IBR"}],
+        },
+        "github": {
+            "repositories": [
+                {"full_name": "example/repo", "team_ids": ["legacy-team"]}
+            ]
+        },
+    }).github.repositories[0]
+
+    assert repository.model_dump() == {"full_name": "example/repo"}
+
+
 def test_atlassian_host_overrides_configured_base_url(monkeypatch) -> None:
     monkeypatch.setenv("ATLASSIAN_HOST", "live-instance.atlassian.net")
 

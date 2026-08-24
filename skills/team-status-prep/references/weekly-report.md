@@ -7,10 +7,15 @@ identity, and team ordering. Run the complete refresh first and require a receip
 `status: completed`, a new snapshot ID, every configured Jira board/query run, and
 every configured GitHub repository run. A failed or missing configured source blocks
 rendering. The normalized store is the deduplication boundary; never merge raw exports.
+The default report refresh mode is `incremental`. Persist and report the refresh ID,
+consume its JSONL events for progress, and render only after its durable state and
+terminal receipt both say `completed`. Resume only that exact compatible run ID.
 
-The Jira board whose configured role is `ibr` (the IBR board; `portfolio` is a legacy alias) supplies the report workflow. If
-none has that role, the first configured board is used. Named queries and repositories
-extend coverage but do not imply ownership beyond their explicit configuration.
+The Jira board whose configured role is `ibr` (the IBR board; `portfolio` is a legacy
+alias) supplies the report workflow. If none has that role, the first configured board
+is used. Named queries extend Jira coverage. GitHub repositories are organization-wide
+collection scope and never imply team ownership; a GitHub record belongs in a team's
+view only through a configured member's GitHub identity.
 
 ## Evidence and synthesis
 
@@ -19,6 +24,9 @@ snapshot, including secondary memberships and people without a current team. Pre
 source freshness, empty workflow states, unmapped statuses, exact Target Date text,
 flags, metrics definitions, sample sizes, exclusions, Jira hierarchy, blocking links,
 and linked GitHub pull requests, commits, and reviews.
+Preserve configured RAG rule IDs, thresholds, symbols, team/classification scope, and
+the deterministic assessment on each metric instance. Never infer an unconfigured
+threshold.
 
 Agent-authored summaries must be neutral weekly-update prose grounded in links. Group
 related work into themes and explain why it matters; do not concatenate ticket text or
@@ -28,19 +36,53 @@ unavailable. Never access private notes or 1:1 content.
 
 ## Output
 
+Treat snapshot analysis and HTML rendering as separate phases. Persist every successful
+derived report view in the renderer's snapshot/configuration-bound cache. A fresh
+snapshot materializes these views once; subsequent template or presentation changes
+must render from them without API calls or repeated analytical queries. Writes must be
+atomic, interrupted materialization must resume from completed entries, and corrupt or
+mismatched entries must fail loudly instead of being silently ignored.
+
 Create exactly one self-contained HTML single-page app with embedded CSS and JavaScript:
 
-- `#/` is an overview with one full-width row per configured team. The linked team name
-  is the only route control, and every current member links to their person page.
+- `#/` is a four-part landing page: Teams, People, Issue Finder, and GitHub Finder.
+  Teams and People provide compact direct links to every configured detail page.
+  `#/issue-finder` provides one deduplicated table of every Jira issue pinned in the
+  configured team-field query scopes, with text, date, team, status, and IBR
+  classification filters. Users can add, remove, and reorder the Issue Finder's
+  visible columns without changing its underlying evidence. Cycle columns measure
+  calendar time from first entry into In Progress through first Done or the pinned
+  snapshot boundary, break out In Progress, Code Review, and Test time, and identify
+  skipped steps in the ordered delivery workflow. User-supplied Amber and Red cycle
+  thresholds color and symbolize qualifying cells, while missing or incomplete
+  evidence uses a distinct treatment. A row filter surfaces any issue with at least
+  one Red or Amber cell. Never invent default thresholds. `#/github-finder` provides
+  one deduplicated, paged table of every pull request and associated commit pinned in
+  configured repository scope. It supports combined text, record type, repository,
+  state, author, author-team, reviewer, reviewer-team, linked-Jira, and local date
+  filters plus sortable columns. Team filters resolve authors and reviewers through
+  configured member GitHub identities. Sortable PR pickup-time and review-time columns
+  use the same eligible-review definitions as the team PR metrics and remain empty when
+  the required evidence is unavailable.
+  Users can add, remove, and reorder visible GitHub columns independently of the Jira
+  finder. GitHub Issues and an independent default-branch commit crawl are out of scope.
 - `#/teams/TEAM` shows workflow, hierarchy, health, hygiene, metrics, Jira/GitHub
-  classification when its configured query exists, and member links.
+  classification when its configured query exists, Build Cycle Time split between
+  IBR-linked parents and all non-IBR team-assigned issue types with status/child
+  evidence, GitHub PR pickup/review time across all configured repositories scoped by
+  team-member author identity with contributor and participant evidence, and member
+  links. Team Health includes a red/amber/green index whose links open the owning
+  section and jump to the exact assessed issue or pull request.
 - `#/people/PERSON` shows neutral work context, current memberships, Jira relationships,
   delivery evidence, deterministic signals, and team links.
 
-Keep overview rows expanded and secondary evidence on detail routes collapsed. Include
-clickable evidence, explicit empty states, snapshot ID, generation time, source
-freshness, search, sortable flat tables, table filters, status filters, and a global
-date range filter. Direct hash routes must work when the HTML file is opened locally.
+Keep overview rows expanded and secondary evidence on detail routes collapsed. The top
+navigation identifies the application as Engineering Intelligence, embeds the supplied
+logo asset, and shows the report-generation timestamp. Include clickable evidence,
+explicit empty states, snapshot ID, generation time, source freshness, sortable flat
+tables, table filters, and status filters. Date-range controls belong beside the table
+or metric group they filter and must not apply globally. Direct hash routes must work
+when the HTML file is opened locally.
 
 Run the renderer with the same installed configuration used by refresh:
 

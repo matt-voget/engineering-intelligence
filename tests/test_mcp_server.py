@@ -98,6 +98,8 @@ def test_mcp_tools_use_deterministic_query_contracts(tmp_path: Path) -> None:
 
         assert set(tools) == {
             "get_metrics",
+            "get_build_cycle_time",
+            "get_github_pr_metrics",
             "list_attention",
             "get_flag",
             "get_dashboard",
@@ -163,6 +165,8 @@ def test_stdio_protocol_lists_read_only_tools(tmp_path: Path) -> None:
             tools = await session.list_tools()
             assert [tool.name for tool in tools.tools] == [
                 "get_metrics",
+                "get_build_cycle_time",
+                "get_github_pr_metrics",
                 "list_attention",
                 "get_flag",
                 "get_dashboard",

@@ -10,6 +10,15 @@ it exactly. Use `scripts/generate_weekly_status.py` only after the refresh succe
 The required result is one portable HTML single-page app with an overview route and
 one client-side route for every team and individual; do not create a companion report
 directory.
+The GitHub Finder route must contain every snapshot-pinned pull request and associated
+commit in configured repository scope, with combined filters, paging, sorting, and
+independent hide/show/reorder column controls. GitHub Issues are out of scope.
+Author-team and reviewer-team filters must resolve configured member GitHub identities
+at the pinned snapshot; repository scope never implies team ownership. Show sortable
+PR pickup and review duration columns using the team PR metric evidence rules.
+Embed the Engineering Intelligence logo from `assets/engineering-intelligence-logo.png`
+as a data URI, show the generation timestamp in the top navigation, and keep date
+filters local to the table or metric group they affect.
 
 Use the installed Engineering Intelligence MCP tools when available. Fall back to
 `uv run engintel` from `ENGINTEL_REPO` or the repository resolved as `../..` from
@@ -19,6 +28,8 @@ this skill. Use `ENGINTEL_DATA_DIR` for the persistent runtime.
 
 - Always run the complete refresh workflow when generating a report. Do not reuse a
   cached or earlier snapshot for a new report.
+- Use `incremental` mode by default. Use `reconcile` only when requested or on the
+  configured reconciliation cadence; reserve `full` for audit/recovery.
 - Require a completed receipt for every configured Jira scope and GitHub repository.
 - Rely on the ingestion layer's stable source keys to deduplicate Jira issues, pull
   requests, commits, and reviews. Never concatenate exports or deduplicate in prose.
@@ -36,23 +47,55 @@ Current-status CLI command:
 
 ```bash
 uv run engintel refresh run \
+  --mode incremental \
   --source-config SOURCE_CONFIG \
   --teams-config TEAMS_CONFIG \
   --data-dir DATA_DIR
 ```
+
+Run this synchronously in the foreground, or through the owned scheduler. Do not use
+an ad-hoc detached shell process. Progress is JSONL on stderr and durable under
+`DATA_DIR/receipts/refresh/runs/REFRESH_ID/events.jsonl`; translate its structured
+checked/new/updated/reused counters into periodic human updates. Do not infer health
+from silence.
+
+If execution is interrupted or disappears, run `engintel refresh status REFRESH_ID`.
+A `stale`, `cancelled`, or `failed` state blocks rendering. After remediating the
+cause, use `engintel refresh resume REFRESH_ID --mode MODE` with the same source/team
+configuration; never use the legacy latest-run `--resume` shortcut. Use
+`engintel refresh watch REFRESH_ID` when another owned process is executing the run.
+Every non-completed command exit is a report-generation failure and must be surfaced.
 
 Stop on authentication, ingestion, migration, coverage, receipt, or integrity failure.
 Do not render from partial, stale, or remembered data.
 
 ## Build the report
 
+The renderer persists successful derived views in a snapshot- and configuration-bound
+report cache under `DATA_DIR/report-cache`. Materialization may be expensive once per
+fresh snapshot, but template-only rerenders must reuse that cache and complete without
+re-querying Jira, GitHub, or recomputing derived views. Cache entries are atomic and
+resumable. A corrupt or mismatched entry is a loud failure; use
+`--rebuild-report-cache` only to deliberately recompute it.
+
 1. Call MCP `get_dashboard(snapshot)` to establish health and active flags.
 2. Discover teams and people from the new snapshot; never use a hard-coded roster.
 3. Call MCP `get_team_brief(snapshot, team)` for the requested team.
 4. Call MCP `get_metrics(snapshot, team=TEAM)` when flow context is requested.
-5. Call MCP `get_feature(snapshot, issue_key)` only for Features needing explanation.
-6. Call MCP `list_attention` or `get_flag` only when flag lifecycle detail is needed.
-7. Call MCP `get_team(snapshot, team)` only when the compact brief lacks evidence
+5. Call MCP `get_build_cycle_time(snapshot, team)` for the team-detail Build Cycle
+   Time section, including IBR parents, all non-IBR team-assigned issue types, status
+   attribution, and child timing.
+6. Call MCP `get_feature(snapshot, issue_key)` only for Features needing explanation.
+7. Call MCP `get_github_pr_metrics(snapshot, team)` for team pickup/review time,
+   across every configured repository and scoped to PR authors whose configured
+   GitHub identity belongs to the selected team, including top contributing PRs and
+   involved authors/reviewers. Repository configuration never assigns a GitHub record
+   to a team.
+8. Preserve deterministic RAG assessments from configured `rag.rules`. Render each
+   assessment with its configured symbol and color, and provide a stable deep link
+   from Team Health to the exact metric instance. Never invent thresholds.
+9. Call MCP `list_attention` or `get_flag` only when flag lifecycle detail is needed.
+10. Call MCP `get_team(snapshot, team)` only when the compact brief lacks evidence
    required by a follow-up; its complete GitHub delivery list can be large.
 
 Use equivalent CLI commands when MCP is unavailable:
@@ -62,6 +105,11 @@ uv run engintel dashboard get SNAPSHOT --data-dir DATA_DIR --format json
 uv run engintel team brief TEAM --snapshot SNAPSHOT \
   --data-dir DATA_DIR --format json
 uv run engintel metrics get --snapshot SNAPSHOT --team TEAM \
+  --data-dir DATA_DIR --format json
+uv run engintel metrics build-cycle --snapshot SNAPSHOT --team TEAM \
+  --teams-config TEAMS_CONFIG --data-dir DATA_DIR --format json
+uv run engintel metrics github-pr --snapshot SNAPSHOT --team TEAM \
+  --source-config SOURCE_CONFIG --teams-config TEAMS_CONFIG \
   --data-dir DATA_DIR --format json
 ```
 

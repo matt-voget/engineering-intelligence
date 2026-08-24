@@ -89,6 +89,10 @@ class JiraFixtureClient:
 class GitHubFixtureClient:
     title = "IDN-1 Ship the agent-ready dashboard"
 
+    def __init__(self) -> None:
+        self.commit_requests = 0
+        self.review_requests = 0
+
     def get_repository(self, _full_name: str) -> dict[str, Any]:
         return {
             "id": 42,
@@ -132,6 +136,7 @@ class GitHubFixtureClient:
         _full_name: str,
         _number: int,
     ) -> list[dict[str, Any]]:
+        self.commit_requests += 1
         return [
             {
                 "sha": "abc123",
@@ -170,6 +175,7 @@ class GitHubFixtureClient:
         _full_name: str,
         _number: int,
     ) -> list[dict[str, Any]]:
+        self.review_requests += 1
         return [
             {
                 "id": 7001,
@@ -221,6 +227,18 @@ def test_github_ingestion_is_idempotent_and_links_explicit_jira_keys(
     with sessions() as session:
         assert session.get(IngestionRun, first_run_id).records_changed == 1
         assert session.get(IngestionRun, second_run_id).records_changed == 0
+        assert session.get(IngestionRun, first_run_id).request_context["counters"] == {
+            "checked": 1,
+            "new": 1,
+            "updated": 0,
+            "reused": 0,
+        }
+        assert session.get(IngestionRun, second_run_id).request_context["counters"] == {
+            "checked": 1,
+            "new": 0,
+            "updated": 0,
+            "reused": 1,
+        }
         assert session.scalar(select(func.count()).select_from(GitHubPullRequest)) == 1
         assert session.scalar(select(func.count()).select_from(GitHubPullRequestVersion)) == 1
         assert session.scalar(select(func.count()).select_from(GitHubCommit)) == 3
@@ -232,6 +250,8 @@ def test_github_ingestion_is_idempotent_and_links_explicit_jira_keys(
             ("commit", "def456"),
         }
         assert all(link.confidence == "confirmed" for link in links)
+    assert client.commit_requests == 1
+    assert client.review_requests == 1
 
     client.title = "IDN-1 Ship the improved agent-ready dashboard"
     later = datetime(2026, 7, 29, 16, 0, tzinfo=UTC)
@@ -242,6 +262,19 @@ def test_github_ingestion_is_idempotent_and_links_explicit_jira_keys(
     with sessions() as session:
         assert session.get(IngestionRun, third_run_id).records_changed == 1
         assert session.scalar(select(func.count()).select_from(GitHubPullRequestVersion)) == 2
+    assert client.commit_requests == 2
+    assert client.review_requests == 2
+    reconcile_run_id = service.ingest_repository(
+        "gravitee-io/example",
+        observed_at=later,
+        force_refresh=True,
+    )
+    with sessions() as session:
+        assert session.get(IngestionRun, reconcile_run_id).request_context["counters"][
+            "reused"
+        ] == 1
+    assert client.commit_requests == 3
+    assert client.review_requests == 3
 
     OrganizationService(sessions).apply(
         TeamsConfig.model_validate(

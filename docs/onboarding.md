@@ -71,7 +71,7 @@ without working credentials.
   those pushed within `initial_lookback_days` (default 90).
 - Propose the filtered list to the user for confirmation — they may drop
   repositories that are noise or add ones the filter missed. Repository
-  Repository selection only bounds collection scope. Team ownership is derived
+  selection only bounds collection scope. Team ownership is derived
   from confirmed member `github_login` identities in step 5.
 
 ## Step 5 — Discover team rosters and cross-verify GitHub identities
@@ -97,10 +97,10 @@ For each team name the user supplied:
    match. Unmatched people keep `github_login: null` with an explicit note.
    **No mapping is written until the user confirms it** — a wrong identity
    mapping silently misattributes delivery evidence.
-4. Confirm repository coverage independently of team ownership. Repositories
-   determine what GitHub data is collected; an active member's confirmed
-   `github_login` determines which team receives that person's PR, commit, and
-   review evidence. Jira keys classify the evidence but do not assign its team.
+ 4. Confirm repository coverage independently of team ownership. Repositories
+    determine what GitHub data is collected; an active member's confirmed
+    `github_login` determines which team receives that person's PR, commit, and
+    review evidence. Jira keys classify the evidence but do not assign its team.
 
 ## Step 6 — Derive per-team classification queries
 

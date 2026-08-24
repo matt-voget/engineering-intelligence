@@ -3,10 +3,17 @@
 import os
 from datetime import date
 from pathlib import Path
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -55,6 +62,8 @@ class JiraConfig(BaseModel):
     hierarchy_max_depth: int = Field(default=10, ge=0, le=25)
     hierarchy_batch_size: int = Field(default=40, ge=1, le=100)
     collect_accountable_work: bool = False
+    request_concurrency: int = Field(default=2, ge=1, le=16)
+    source_workers: int = Field(default=2, ge=1, le=16)
     boards: list[JiraBoardConfig]
     queries: list[JiraQueryConfig] = Field(default_factory=list)
 
@@ -75,6 +84,14 @@ class GitHubRepositoryConfig(BaseModel):
 
     full_name: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_legacy_team_ids(cls, value):
+        """Load older files/snapshots while removing repository-team semantics."""
+        if isinstance(value, dict) and "team_ids" in value:
+            value = {key: item for key, item in value.items() if key != "team_ids"}
+        return value
+
 
 class GitHubConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -86,6 +103,8 @@ class GitHubConfig(BaseModel):
     # Every run re-verifies at least this many days of pull-request history per
     # repository; the per-repository cap only limits records older than this window.
     min_refresh_window_days: int = Field(default=31, ge=1, le=365)
+    request_concurrency: int = Field(default=4, ge=1, le=16)
+    repository_workers: int = Field(default=4, ge=1, le=16)
     repositories: list[GitHubRepositoryConfig] = Field(default_factory=list)
 
 
@@ -136,10 +155,56 @@ class TeamConfig(BaseModel):
     )
 
 
+class RagRuleConfig(BaseModel):
+    """Threshold rule for a report metric instance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,63}$")
+    label: str
+    section: Literal["build_cycle_time", "github_pr_metrics"]
+    metric: Literal["cycle_days", "pickup_hours", "review_hours"]
+    amber_at: float = Field(ge=0)
+    red_at: float = Field(ge=0)
+    classification: Literal["ibr_linked", "non_ibr"] | None = None
+    team_ids: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _validate_thresholds_and_scope(self):
+        if self.red_at <= self.amber_at:
+            raise ValueError("red_at must be greater than amber_at")
+        if self.section == "build_cycle_time" and self.metric != "cycle_days":
+            raise ValueError("build_cycle_time rules require metric: cycle_days")
+        if self.section == "github_pr_metrics" and self.metric == "cycle_days":
+            raise ValueError("github_pr_metrics rules require an hour metric")
+        if self.classification and self.section != "build_cycle_time":
+            raise ValueError("classification is only valid for build_cycle_time")
+        return self
+
+
+class RagConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    green_symbol: str = "✓"
+    amber_symbol: str = "▲"
+    red_symbol: str = "!"
+    rules: list[RagRuleConfig] = Field(default_factory=list)
+
+    @field_validator("rules")
+    @classmethod
+    def _unique_rule_ids(cls, rules: list[RagRuleConfig]) -> list[RagRuleConfig]:
+        ids = [rule.id for rule in rules]
+        if len(ids) != len(set(ids)):
+            raise ValueError("RAG rule IDs must be unique")
+        return rules
+
+
 class TeamsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = "1"
+    rag: RagConfig = Field(default_factory=RagConfig)
     teams: list[TeamConfig]
 
 

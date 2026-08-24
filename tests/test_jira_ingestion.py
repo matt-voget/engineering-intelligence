@@ -64,6 +64,7 @@ class FixtureJiraClient:
     def __init__(self) -> None:
         self.board = fixture("board_2168.json")
         self.issues = [fixture("issue_idn_1.json")]
+        self.changelog_requests: list[list[str]] = []
 
     def get_board_configuration(self, board_id: int) -> dict[str, Any]:
         assert board_id == 2168
@@ -99,6 +100,7 @@ class FixtureJiraClient:
         field_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         assert field_ids == ["status"]
+        self.changelog_requests.append(issue_ids_or_keys)
         return [
             {
                 "issueId": "100001",
@@ -169,6 +171,39 @@ class FixtureJiraClient:
         return [fixture("issue_idn_1.json")]
 
 
+class DeltaJiraClient(FixtureJiraClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.board_field_requests: list[list[str]] = []
+        self.detail_requests: list[list[str]] = []
+
+    def iter_board_issues(
+        self,
+        board_id: int,
+        *,
+        fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        assert board_id == 2168
+        self.board_field_requests.append(fields or [])
+        issue = self.issues[0]
+        return [
+            {
+                "id": issue["id"],
+                "key": issue["key"],
+                "fields": {field: issue["fields"].get(field) for field in fields or []},
+            }
+        ]
+
+    def iter_issue_details(
+        self,
+        issue_ids_or_keys: list[str],
+        *,
+        fields: list[str],
+    ) -> list[dict[str, Any]]:
+        self.detail_requests.append(issue_ids_or_keys)
+        return [issue for issue in self.issues if str(issue["id"]) in issue_ids_or_keys]
+
+
 def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
     database_path = tmp_path / "engintel.db"
     upgrade_database(database_path)
@@ -184,8 +219,8 @@ def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
         gravitee_customers_field_id="customfield_10607",
     )
     first_at = datetime(2026, 7, 28, 16, 0, tzinfo=UTC)
-    service.ingest_board(2168, observed_at=first_at)
-    service.ingest_board(2168, observed_at=first_at + timedelta(minutes=15))
+    first_run_id = service.ingest_board(2168, observed_at=first_at)
+    second_run_id = service.ingest_board(2168, observed_at=first_at + timedelta(minutes=15))
     SnapshotService(sessions).create(
         [2168],
         name="metrics-fixture",
@@ -227,9 +262,23 @@ def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
             "In Progress",
         ]
         assert transitions[0].first_seen_at.replace(tzinfo=UTC) == first_at
-        assert transitions[0].last_seen_at.replace(tzinfo=UTC) == (
-            first_at + timedelta(minutes=15)
-        )
+        assert transitions[0].last_seen_at.replace(tzinfo=UTC) == first_at
+        assert len(client.changelog_requests) == 1
+        first_run = session.get(IngestionRun, first_run_id)
+        second_run = session.get(IngestionRun, second_run_id)
+        assert first_run is not None and second_run is not None
+        assert first_run.request_context["counters"] == {
+            "checked": 3,
+            "new": 3,
+            "updated": 0,
+            "reused": 0,
+        }
+        assert second_run.request_context["counters"] == {
+            "checked": 3,
+            "new": 0,
+            "updated": 0,
+            "reused": 3,
+        }
 
     metrics = MetricsQuery(sessions).get(
         "metrics-fixture",
@@ -247,6 +296,31 @@ def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
     assert "IDN-1" in render_metrics_markdown(metrics)
 
 
+def test_incremental_board_scan_hydrates_only_changed_issue_details(tmp_path: Path) -> None:
+    database_path = tmp_path / "engintel.db"
+    upgrade_database(database_path)
+    sessions = session_factory(create_sqlite_engine(database_path))
+    client = DeltaJiraClient()
+    service = JiraIngestionService(
+        sessions,
+        RawPayloadArchive(tmp_path / "raw"),
+        client,  # type: ignore[arg-type]
+        base_url="https://gravitee.atlassian.net",
+    )
+
+    service.ingest_board(2168)
+    service.ingest_board(2168)
+    service.ingest_board(2168, force_refresh=True)
+
+    assert client.board_field_requests == [
+        ["updated", "parent", "subtasks"],
+        ["updated", "parent", "subtasks"],
+        service._requested_fields(client.board),
+    ]
+    assert client.detail_requests == [["100001"]]
+    assert len(client.changelog_requests) == 2
+
+
 def test_changed_issue_creates_a_new_version(tmp_path: Path) -> None:
     database_path = tmp_path / "engintel.db"
     upgrade_database(database_path)
@@ -260,6 +334,7 @@ def test_changed_issue_creates_a_new_version(tmp_path: Path) -> None:
     )
     service.ingest_board(2168)
     client.issues[0]["fields"]["summary"] = "Updated summary"
+    client.issues[0]["fields"]["updated"] = "2026-07-30T12:00:00+00:00"
     service.ingest_board(2168)
 
     with sessions() as session:

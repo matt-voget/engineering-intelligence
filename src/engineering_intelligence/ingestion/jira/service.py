@@ -1,5 +1,6 @@
 """Idempotent Jira board ingestion orchestration."""
 
+from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -9,7 +10,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from engineering_intelligence.ingestion.archive import RawPayloadArchive
 from engineering_intelligence.ingestion.jira.client import JiraClient
-from engineering_intelligence.ingestion.jira.normalization import normalize_issue
+from engineering_intelligence.ingestion.jira.normalization import normalize_issue, parse_datetime
+from engineering_intelligence.ingestion.limiter import StripedLock
 from engineering_intelligence.persistence.models import (
     Board,
     BoardColumn,
@@ -37,6 +39,7 @@ class JiraIngestionService:
         gravitee_customers_field_id: str | None = None,
         hierarchy_max_depth: int = 10,
         hierarchy_batch_size: int = 40,
+        issue_locks: StripedLock | None = None,
     ) -> None:
         self.sessions = sessions
         self.archive = archive
@@ -47,8 +50,15 @@ class JiraIngestionService:
         self.gravitee_customers_field_id = gravitee_customers_field_id
         self.hierarchy_max_depth = hierarchy_max_depth
         self.hierarchy_batch_size = hierarchy_batch_size
+        self.issue_locks = issue_locks or StripedLock()
 
-    def ingest_board(self, board_id: int, *, observed_at: datetime | None = None) -> str:
+    def ingest_board(
+        self,
+        board_id: int,
+        *,
+        observed_at: datetime | None = None,
+        force_refresh: bool = False,
+    ) -> str:
         observed_at = observed_at or datetime.now(UTC)
         run_id = str(uuid4())
         with self.sessions.begin() as session:
@@ -82,27 +92,41 @@ class JiraIngestionService:
 
             seen = 0
             changed = 0
+            counters = {"checked": 0, "new": 0, "updated": 0, "reused": 0}
             seen_issue_ids: set[str] = set()
+            changed_issue_ids: set[str] = set()
             frontier_keys: list[str] = []
             requested_fields = self._requested_fields(configuration)
-            for payload in self.client.iter_board_issues(
-                board_id,
-                fields=requested_fields,
+            supports_delta_hydration = (
+                hasattr(self.client, "iter_issue_details") and not force_refresh
+            )
+            board_fields = self._membership_fields() if supports_delta_hydration else requested_fields
+            board_payloads = self.client.iter_board_issues(board_id, fields=board_fields)
+            for payload, change_kind in self._classified_payloads(
+                board_payloads,
+                requested_fields,
             ):
                 seen += 1
                 seen_issue_ids.add(str(payload["id"]))
                 frontier_keys.append(payload["key"])
-                with self.sessions.begin() as session:
-                    self._record_payload(
-                        session,
-                        run_id,
-                        "issue",
-                        str(payload["id"]),
-                        payload,
-                        observed_at,
-                        {"board_id": board_id},
-                    )
-                    changed += self._upsert_issue(session, payload, observed_at)
+                with self.issue_locks.slot(str(payload["id"])), self.sessions.begin() as session:
+                    change_kind = self._classify_issue(session, payload)
+                    counters["checked"] += 1
+                    counters[change_kind] += 1
+                    if force_refresh or change_kind != "reused":
+                        self._record_payload(
+                            session,
+                            run_id,
+                            "issue",
+                            str(payload["id"]),
+                            payload,
+                            observed_at,
+                            {"board_id": board_id},
+                        )
+                        changed += self._upsert_issue(session, payload, observed_at)
+                        changed_issue_ids.add(str(payload["id"]))
+                    else:
+                        self._mark_issue_seen(session, str(payload["id"]), observed_at)
                     # Make the issue visible to SQLite before inserting the
                     # board-membership row that references it.
                     session.flush()
@@ -115,21 +139,24 @@ class JiraIngestionService:
                             ingestion_run_id=run_id,
                         )
                     )
-            hierarchy_seen, hierarchy_changed = self._ingest_hierarchy(
+            hierarchy_seen, hierarchy_changed, hierarchy_changed_ids = self._ingest_hierarchy(
                 run_id,
                 board_id,
                 observed_at,
                 requested_fields,
                 frontier_keys,
                 seen_issue_ids,
+                counters,
+                force_refresh,
             )
             seen += hierarchy_seen
             changed += hierarchy_changed
+            changed_issue_ids.update(hierarchy_changed_ids)
             changelog_seen, changelog_changed = self._ingest_status_changelogs(
                 run_id,
                 board_id,
                 observed_at,
-                seen_issue_ids,
+                changed_issue_ids,
             )
             seen += changelog_seen
             changed += changelog_changed
@@ -140,6 +167,7 @@ class JiraIngestionService:
                 run.completed_at = datetime.now(UTC)
                 run.records_seen = seen
                 run.records_changed = changed
+                run.request_context = {**run.request_context, "counters": counters}
             return run_id
         except Exception as error:
             with self.sessions.begin() as session:
@@ -156,6 +184,7 @@ class JiraIngestionService:
         jql: str,
         *,
         observed_at: datetime | None = None,
+        force_refresh: bool = False,
     ) -> str:
         """Archive and normalize one explicitly configured named JQL scope."""
         observed_at = observed_at or datetime.now(UTC)
@@ -177,27 +206,42 @@ class JiraIngestionService:
         try:
             seen = 0
             changed = 0
+            counters = {"checked": 0, "new": 0, "updated": 0, "reused": 0}
             issue_ids: set[str] = set()
-            for payload in self.client.iter_jql_issues(
-                jql,
-                fields=self._requested_fields({}),
+            changed_issue_ids: set[str] = set()
+            requested_fields = self._requested_fields({})
+            supports_delta_hydration = (
+                hasattr(self.client, "iter_issue_details") and not force_refresh
+            )
+            query_fields = self._membership_fields() if supports_delta_hydration else requested_fields
+            query_payloads = self.client.iter_jql_issues(jql, fields=query_fields)
+            for payload, change_kind in self._classified_payloads(
+                query_payloads,
+                requested_fields,
             ):
                 issue_id = str(payload["id"])
                 if issue_id in issue_ids:
                     continue
                 issue_ids.add(issue_id)
                 seen += 1
-                with self.sessions.begin() as session:
-                    self._record_payload(
-                        session,
-                        run_id,
-                        "query_issue",
-                        issue_id,
-                        payload,
-                        observed_at,
-                        {"query_id": scope_id},
-                    )
-                    changed += self._upsert_issue(session, payload, observed_at)
+                with self.issue_locks.slot(issue_id), self.sessions.begin() as session:
+                    change_kind = self._classify_issue(session, payload)
+                    counters["checked"] += 1
+                    counters[change_kind] += 1
+                    if force_refresh or change_kind != "reused":
+                        self._record_payload(
+                            session,
+                            run_id,
+                            "query_issue",
+                            issue_id,
+                            payload,
+                            observed_at,
+                            {"query_id": scope_id},
+                        )
+                        changed += self._upsert_issue(session, payload, observed_at)
+                        changed_issue_ids.add(issue_id)
+                    else:
+                        self._mark_issue_seen(session, issue_id, observed_at)
                     session.flush()
                     session.add(
                         JiraScopeObservation(
@@ -212,7 +256,7 @@ class JiraIngestionService:
                 run_id,
                 None,
                 observed_at,
-                issue_ids,
+                changed_issue_ids,
                 scope_id=scope_id,
             )
             seen += transition_seen
@@ -224,6 +268,7 @@ class JiraIngestionService:
                 run.completed_at = datetime.now(UTC)
                 run.records_seen = seen
                 run.records_changed = changed
+                run.request_context = {**run.request_context, "counters": counters}
             return run_id
         except Exception as error:
             with self.sessions.begin() as session:
@@ -243,6 +288,8 @@ class JiraIngestionService:
         *,
         scope_id: str | None = None,
     ) -> tuple[int, int]:
+        if not issue_ids:
+            return 0, 0
         seen = 0
         changed = 0
         for issue_log in self.client.iter_issue_changelogs(
@@ -250,7 +297,7 @@ class JiraIngestionService:
             field_ids=["status"],
         ):
             issue_id = str(issue_log["issueId"])
-            with self.sessions.begin() as session:
+            with self.issue_locks.slot(issue_id), self.sessions.begin() as session:
                 self._record_payload(
                     session,
                     run_id,
@@ -311,9 +358,12 @@ class JiraIngestionService:
         requested_fields: list[str],
         frontier_keys: list[str],
         seen_issue_ids: set[str],
-    ) -> tuple[int, int]:
+        counters: dict[str, int],
+        force_refresh: bool,
+    ) -> tuple[int, int, set[str]]:
         hierarchy_seen = 0
         hierarchy_changed = 0
+        changed_issue_ids: set[str] = set()
         for depth in range(1, self.hierarchy_max_depth + 1):
             next_frontier: list[str] = []
             for start in range(0, len(frontier_keys), self.hierarchy_batch_size):
@@ -328,29 +378,98 @@ class JiraIngestionService:
                     seen_issue_ids.add(issue_id)
                     next_frontier.append(payload["key"])
                     hierarchy_seen += 1
-                    with self.sessions.begin() as session:
-                        self._record_payload(
-                            session,
-                            run_id,
-                            "hierarchy_issue",
-                            issue_id,
-                            payload,
-                            observed_at,
-                            {
-                                "board_id": board_id,
-                                "hierarchy_depth": depth,
-                                "parent_keys": parent_keys,
-                            },
-                        )
-                        hierarchy_changed += self._upsert_issue(
-                            session,
-                            payload,
-                            observed_at,
-                        )
+                    with self.issue_locks.slot(issue_id), self.sessions.begin() as session:
+                        change_kind = self._classify_issue(session, payload)
+                        counters["checked"] += 1
+                        counters[change_kind] += 1
+                        if force_refresh or change_kind != "reused":
+                            self._record_payload(
+                                session,
+                                run_id,
+                                "hierarchy_issue",
+                                issue_id,
+                                payload,
+                                observed_at,
+                                {
+                                    "board_id": board_id,
+                                    "hierarchy_depth": depth,
+                                    "parent_keys": parent_keys,
+                                },
+                            )
+                            hierarchy_changed += self._upsert_issue(
+                                session,
+                                payload,
+                                observed_at,
+                            )
+                            changed_issue_ids.add(issue_id)
+                        else:
+                            self._mark_issue_seen(session, issue_id, observed_at)
             if not next_frontier:
                 break
             frontier_keys = next_frontier
-        return hierarchy_seen, hierarchy_changed
+        return hierarchy_seen, hierarchy_changed, changed_issue_ids
+
+    def _classify_issue(self, session: Session, payload: dict[str, Any]) -> str:
+        issue = session.get(JiraIssue, str(payload["id"]))
+        if issue is None:
+            return "new"
+        source_updated_at = parse_datetime((payload.get("fields") or {}).get("updated"))
+        if source_updated_at is None or issue.last_source_updated_at is None:
+            return "updated"
+        persisted = issue.last_source_updated_at
+        if persisted.tzinfo is None:
+            persisted = persisted.replace(tzinfo=UTC)
+        if persisted.astimezone(UTC) != source_updated_at.astimezone(UTC):
+            return "updated"
+        return "reused"
+
+    def _classified_payloads(
+        self,
+        payloads: Iterable[dict[str, Any]],
+        requested_fields: list[str],
+    ) -> Iterator[tuple[dict[str, Any], str]]:
+        if not hasattr(self.client, "iter_issue_details"):
+            for payload in payloads:
+                with self.sessions() as session:
+                    change_kind = self._classify_issue(session, payload)
+                yield payload, change_kind
+            return
+
+        changed: dict[str, str] = {}
+        for payload in payloads:
+            issue_id = str(payload["id"])
+            with self.sessions() as session:
+                change_kind = self._classify_issue(session, payload)
+            if change_kind == "reused":
+                yield payload, change_kind
+            else:
+                changed[issue_id] = change_kind
+        if not changed:
+            return
+        hydrated_ids: set[str] = set()
+        for payload in self.client.iter_issue_details(
+            sorted(changed),
+            fields=requested_fields,
+        ):
+            issue_id = str(payload["id"])
+            if issue_id not in changed:
+                raise ValueError(f"Jira delta hydration returned unrequested issue {issue_id}")
+            hydrated_ids.add(issue_id)
+            yield payload, changed[issue_id]
+        missing = sorted(set(changed) - hydrated_ids)
+        if missing:
+            raise ValueError(f"Jira delta hydration omitted issues: {missing}")
+
+    @staticmethod
+    def _membership_fields() -> list[str]:
+        return ["updated", "parent", "subtasks"]
+
+    @staticmethod
+    def _mark_issue_seen(session: Session, issue_id: str, observed_at: datetime) -> None:
+        issue = session.get(JiraIssue, issue_id)
+        assert issue is not None
+        issue.last_seen_at = observed_at
+        issue.is_deleted = False
 
     def _record_payload(
         self,

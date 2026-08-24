@@ -4,9 +4,10 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from datetime import date
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 import typer
 
@@ -38,14 +39,18 @@ from engineering_intelligence.portability import PortabilityService
 from engineering_intelligence.presentations.attention import AttentionCollection
 from engineering_intelligence.presentations.team_brief import build_team_brief
 from engineering_intelligence.queries.attention import AttentionQuery
+from engineering_intelligence.queries.build_cycle import BuildCycleTimeQuery
 from engineering_intelligence.queries.dashboard import DashboardQuery
 from engineering_intelligence.queries.feature import FeatureQuery
+from engineering_intelligence.queries.github_finder import GitHubFinderQuery
+from engineering_intelligence.queries.github_pr_metrics import GitHubPullRequestMetricsQuery
 from engineering_intelligence.queries.individual import IndividualQuery
 from engineering_intelligence.queries.metrics import MetricsQuery, resolve_metric_team
 from engineering_intelligence.queries.people import PeopleQuery
 from engineering_intelligence.queries.team import TeamQuery
 from engineering_intelligence.queries.team_work import TeamWorkQuery
 from engineering_intelligence.refresh import RefreshProgressEvent, RefreshService
+from engineering_intelligence.refresh.service import load_run_state
 from engineering_intelligence.renderers.attention_markdown import (
     render_attention_flag_markdown,
     render_attention_markdown,
@@ -152,23 +157,28 @@ def setup(
     for target, template in templates.items():
         shutil.copyfile(template, target)
     upgrade_database(runtime_paths(data_root).database)
-    typer.echo(json.dumps({
-        "status": "ready_for_configuration",
-        "source_config": str(source_target),
-        "teams_config": str(teams_target),
-        "data_dir": str(data_root),
-        "next": [
-            "Export the Jira and GitHub credential variables named in sources.yaml.",
-            (
-                "Export ATLASSIAN_HOST or set jira.base_url, then let an agent run "
-                "the guided onboarding in "
-                "docs/onboarding.md to discover boards, custom fields, repositories, "
-                "and team rosters — or edit both YAML files by hand, replacing every "
-                "CHANGE_ME value."
-            ),
-            "Run engintel install with these config paths, then invoke team-status-prep.",
-        ],
-    }, indent=2))
+    typer.echo(
+        json.dumps(
+            {
+                "status": "ready_for_configuration",
+                "source_config": str(source_target),
+                "teams_config": str(teams_target),
+                "data_dir": str(data_root),
+                "next": [
+                    "Export the Jira and GitHub credential variables named in sources.yaml.",
+                    (
+                        "Export ATLASSIAN_HOST or set jira.base_url, then let an agent run "
+                        "the guided onboarding in "
+                        "docs/onboarding.md to discover boards, custom fields, repositories, "
+                        "and team rosters — or edit both YAML files by hand, replacing every "
+                        "CHANGE_ME value."
+                    ),
+                    "Run engintel install with these config paths, then invoke team-status-prep.",
+                ],
+            },
+            indent=2,
+        )
+    )
 
 
 @app.command()
@@ -237,14 +247,10 @@ def jira_sync(
     upgrade_database(paths.database)
     email, token = jira_credentials(source_config.jira)
     configured_ids = [board.id for board in source_config.jira.boards]
-    configured_queries = {
-        query.id: query for query in source_config.jira.queries if query.enabled
-    }
+    configured_queries = {query.id: query for query in source_config.jira.queries if query.enabled}
     explicit_selection = board_ids is not None or query_ids is not None
     selected_ids = board_ids or ([] if explicit_selection else configured_ids)
-    selected_query_ids = query_ids or (
-        [] if explicit_selection else list(configured_queries)
-    )
+    selected_query_ids = query_ids or ([] if explicit_selection else list(configured_queries))
     unknown = sorted(set(selected_ids) - set(configured_ids))
     if unknown:
         raise typer.BadParameter(f"Boards are not configured: {unknown}", param_hint="--board")
@@ -333,8 +339,7 @@ def github_sync(
     """Archive GitHub pull requests, commits, reviews, and explicit Jira-key links."""
     source_config = load_yaml_model(config_path, SourceConfig)
     configured = {
-        repository.full_name: repository
-        for repository in source_config.github.repositories
+        repository.full_name: repository for repository in source_config.github.repositories
     }
     selected = repositories or list(configured)
     unknown = sorted(set(selected) - set(configured))
@@ -390,6 +395,33 @@ def github_sync(
     )
 
 
+@github_app.command("finder")
+def github_finder(
+    snapshot: Annotated[
+        str,
+        typer.Option("--snapshot", help="Snapshot ID or unique snapshot name."),
+    ],
+    source_config_path: Annotated[
+        Path,
+        typer.Option("--source-config", exists=True, dir_okay=False),
+    ] = Path("config/sources.example.yaml"),
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Output format: json."),
+    ] = "json",
+    data_dir: DataDir = None,
+) -> None:
+    """List snapshot-pinned pull requests and their commits for GitHub Finder."""
+    if output_format != "json":
+        raise typer.BadParameter("Expected json", param_hint="--format")
+    source_config = load_yaml_model(source_config_path, SourceConfig)
+    paths = runtime_paths(data_dir)
+    upgrade_database(paths.database)
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    view = GitHubFinderQuery(sessions).get(snapshot, source_config)
+    typer.echo(view.model_dump_json(indent=2))
+
+
 @snapshot_app.command("create")
 def snapshot_create(
     name: Annotated[str, typer.Option("--name", help="Stable human-readable snapshot name.")],
@@ -411,9 +443,7 @@ def snapshot_create(
     sessions = session_factory(create_sqlite_engine(paths.database))
     snapshot = SnapshotService(sessions).create(
         [board.id for board in source_config.jira.boards],
-        jira_queries=[
-            query.id for query in source_config.jira.queries if query.enabled
-        ],
+        jira_queries=[query.id for query in source_config.jira.queries if query.enabled],
         github_repositories=[
             repository.full_name for repository in source_config.github.repositories
         ],
@@ -461,6 +491,18 @@ def refresh_run(
         int,
         typer.Option("--backup-retention", min=1, help="Number of managed backups to retain."),
     ] = 7,
+    resume: Annotated[
+        bool,
+        typer.Option("--resume", help="Legacy: reuse sources completed by the latest refresh."),
+    ] = False,
+    resume_id: Annotated[
+        str | None,
+        typer.Option("--resume-id", help="Resume a compatible durable run by ID."),
+    ] = None,
+    mode: Annotated[
+        Literal["incremental", "reconcile", "full"],
+        typer.Option("--mode", help="Refresh strategy."),
+    ] = "incremental",
     data_dir: DataDir = None,
 ) -> None:
     """Run the complete deterministic refresh workflow and save a receipt."""
@@ -480,6 +522,40 @@ def refresh_run(
         backup_passphrase=passphrase,
         backup_retention=backup_retention,
         progress_callback=_echo_refresh_progress,
+        resume=resume,
+        resume_refresh_id=resume_id,
+        mode=mode,
+    )
+    typer.echo(receipt.model_dump_json(indent=2))
+    if receipt.status != "completed":
+        raise typer.Exit(1)
+
+
+@refresh_app.command("resume")
+def refresh_resume(
+    refresh_id: Annotated[str, typer.Argument(help="Durable refresh run ID.")],
+    source_config_path: Annotated[
+        Path,
+        typer.Option("--source-config", exists=True, dir_okay=False),
+    ] = Path("config/sources.example.yaml"),
+    teams_config_path: Annotated[
+        Path,
+        typer.Option("--teams-config", exists=True, dir_okay=False),
+    ] = Path("config/teams.example.yaml"),
+    mode: Annotated[
+        Literal["incremental", "reconcile", "full"],
+        typer.Option("--mode", help="Must match the original run mode."),
+    ] = "incremental",
+    data_dir: DataDir = None,
+) -> None:
+    """Resume only incomplete tasks from a compatible durable run manifest."""
+    receipt = RefreshService().run(
+        runtime_paths(data_dir),
+        load_yaml_model(source_config_path, SourceConfig),
+        load_yaml_model(teams_config_path, TeamsConfig),
+        progress_callback=_echo_refresh_progress,
+        resume_refresh_id=refresh_id,
+        mode=mode,
     )
     typer.echo(receipt.model_dump_json(indent=2))
     if receipt.status != "completed":
@@ -498,16 +574,50 @@ def refresh_latest(data_dir: DataDir = None) -> None:
 @refresh_app.command("progress")
 def refresh_progress(data_dir: DataDir = None) -> None:
     """Print durable progress for the latest current or completed refresh."""
-    progress = (
-        runtime_paths(data_dir).root
-        / "receipts"
-        / "refresh"
-        / "progress"
-        / "latest.json"
-    )
+    progress = runtime_paths(data_dir).root / "receipts" / "refresh" / "progress" / "latest.json"
     if not progress.exists():
         raise typer.BadParameter("No refresh progress exists", param_hint="--data-dir")
     typer.echo(progress.read_text().rstrip())
+
+
+@refresh_app.command("status")
+def refresh_status(
+    refresh_id: Annotated[str, typer.Argument(help="Durable refresh run ID.")],
+    data_dir: DataDir = None,
+) -> None:
+    """Print current durable state, reconciling an expired worker lease to stale."""
+    try:
+        state = load_run_state(runtime_paths(data_dir).root, refresh_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="REFRESH_ID") from exc
+    typer.echo(state.model_dump_json(indent=2))
+
+
+@refresh_app.command("watch")
+def refresh_watch(
+    refresh_id: Annotated[str, typer.Argument(help="Durable refresh run ID.")],
+    follow: Annotated[
+        bool,
+        typer.Option("--follow/--no-follow", help="Continue until the run becomes terminal."),
+    ] = True,
+    data_dir: DataDir = None,
+) -> None:
+    """Stream a run's persisted JSONL events."""
+    root = runtime_paths(data_dir).root
+    events_path = root / "receipts" / "refresh" / "runs" / refresh_id / "events.jsonl"
+    if not events_path.exists():
+        raise typer.BadParameter(f"Refresh run does not exist: {refresh_id}", param_hint="REFRESH_ID")
+    offset = 0
+    while True:
+        with events_path.open() as stream:
+            stream.seek(offset)
+            for line in stream:
+                typer.echo(line.rstrip())
+            offset = stream.tell()
+        state = load_run_state(root, refresh_id)
+        if not follow or state.status in {"cancelled", "completed", "failed", "stale"}:
+            return
+        time.sleep(1)
 
 
 def _echo_refresh_progress(event: RefreshProgressEvent) -> None:
@@ -571,6 +681,10 @@ def schedule_install(
             help="macOS Keychain account containing the Jira API token.",
         ),
     ] = None,
+    mode: Annotated[
+        Literal["incremental", "reconcile", "full"],
+        typer.Option("--mode", help="Scheduled refresh strategy."),
+    ] = "incremental",
     config_dir: Annotated[
         Path | None,
         typer.Option("--config-dir", help="Directory containing installation state."),
@@ -581,9 +695,7 @@ def schedule_install(
     lifecycle = LifecycleService(repository_root(), state_root)
     manifest = lifecycle.load()
     if manifest is None:
-        raise typer.BadParameter(
-            "Install Engineering Intelligence before enabling a schedule"
-        )
+        raise typer.BadParameter("Install Engineering Intelligence before enabling a schedule")
     source_config = load_yaml_model(Path(manifest.source_config), SourceConfig)
     state = SchedulerService(repository_root(), state_root).install(
         Path(manifest.data_dir),
@@ -600,6 +712,7 @@ def schedule_install(
         jira_keychain_service=jira_keychain_service,
         jira_keychain_account=jira_keychain_account,
         jira_token_env=source_config.jira.token_env,
+        mode=mode,
     )
     typer.echo(state.model_dump_json(indent=2))
 
@@ -816,9 +929,7 @@ def team_get(
         jira_base_url=str(source_config.jira.base_url),
     ).get(snapshot, team_identifier, teams_config)
     rendered = (
-        team.model_dump_json(indent=2)
-        if output_format == "json"
-        else render_team_markdown(team)
+        team.model_dump_json(indent=2) if output_format == "json" else render_team_markdown(team)
     )
     if output:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -854,6 +965,13 @@ def team_work(
         typer.Option("--teams-config", exists=True, dir_okay=False),
     ] = Path("config/teams.example.yaml"),
     data_dir: DataDir = None,
+    all_jira: Annotated[
+        bool,
+        typer.Option(
+            "--all-jira",
+            help="Include every Jira issue pinned in the team's query scope.",
+        ),
+    ] = False,
 ) -> None:
     """Classify the team's pinned Jira and GitHub work as IBR-linked or not."""
     if output_format != "json":
@@ -862,7 +980,12 @@ def team_work(
     paths = runtime_paths(data_dir)
     upgrade_database(paths.database)
     sessions = session_factory(create_sqlite_engine(paths.database))
-    classification = TeamWorkQuery(sessions).get(snapshot, team_identifier, teams_config)
+    classification = TeamWorkQuery(sessions).get(
+        snapshot,
+        team_identifier,
+        teams_config,
+        include_all_jira=all_jira,
+    )
     typer.echo(classification.model_dump_json(indent=2))
 
 
@@ -935,9 +1058,7 @@ def individual_get(
     if output_format not in {"json", "markdown"}:
         raise typer.BadParameter("Expected json or markdown", param_hint="--format")
     if mode not in {"cached", "smart", "fresh"}:
-        raise typer.BadParameter(
-            "Expected cached, smart, or fresh", param_hint="--mode"
-        )
+        raise typer.BadParameter("Expected cached, smart, or fresh", param_hint="--mode")
     if snapshot is not None and mode == "fresh":
         raise typer.BadParameter(
             "--snapshot cannot be combined with --mode fresh", param_hint="--mode"
@@ -1134,10 +1255,81 @@ def metrics_get(
         date_to=date.fromisoformat(date_to) if date_to else None,
     )
     typer.echo(
-        view.model_dump_json(indent=2)
-        if output_format == "json"
-        else render_metrics_markdown(view)
+        view.model_dump_json(indent=2) if output_format == "json" else render_metrics_markdown(view)
     )
+
+
+@metrics_app.command("build-cycle")
+def metrics_build_cycle(
+    snapshot: Annotated[
+        str,
+        typer.Option("--snapshot", help="Snapshot ID or unique snapshot name."),
+    ],
+    team: Annotated[
+        str,
+        typer.Option("--team", help="Configured team ID or display name."),
+    ],
+    teams_config_path: Annotated[
+        Path,
+        typer.Option("--teams-config", exists=True, dir_okay=False),
+    ] = Path("config/teams.example.yaml"),
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Output format; currently json."),
+    ] = "json",
+    data_dir: DataDir = None,
+) -> None:
+    """Render IBR and non-IBR parent Build Cycle Time evidence."""
+    if output_format != "json":
+        raise typer.BadParameter("Expected json", param_hint="--format")
+    paths = runtime_paths(data_dir)
+    upgrade_database(paths.database)
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    view = BuildCycleTimeQuery(sessions).get(
+        snapshot,
+        team,
+        load_yaml_model(teams_config_path, TeamsConfig),
+    )
+    typer.echo(view.model_dump_json(indent=2))
+
+
+@metrics_app.command("github-pr")
+def metrics_github_pr(
+    snapshot: Annotated[
+        str,
+        typer.Option("--snapshot", help="Snapshot ID or unique snapshot name."),
+    ],
+    team: Annotated[
+        str,
+        typer.Option("--team", help="Configured team ID or display name."),
+    ],
+    source_config_path: Annotated[
+        Path,
+        typer.Option("--source-config", exists=True, dir_okay=False),
+    ] = Path("config/sources.example.yaml"),
+    teams_config_path: Annotated[
+        Path,
+        typer.Option("--teams-config", exists=True, dir_okay=False),
+    ] = Path("config/teams.example.yaml"),
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Output format; currently json."),
+    ] = "json",
+    data_dir: DataDir = None,
+) -> None:
+    """Render team GitHub PR pickup and review-time evidence."""
+    if output_format != "json":
+        raise typer.BadParameter("Expected json", param_hint="--format")
+    paths = runtime_paths(data_dir)
+    upgrade_database(paths.database)
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    view = GitHubPullRequestMetricsQuery(sessions).get(
+        snapshot,
+        team,
+        load_yaml_model(source_config_path, SourceConfig),
+        load_yaml_model(teams_config_path, TeamsConfig),
+    )
+    typer.echo(view.model_dump_json(indent=2))
 
 
 @backup_app.command("create")
@@ -1307,9 +1499,7 @@ def uninstall(
     """Remove only recorded agent links; preserve data, backups, and repository."""
     state_root = config_dir or default_config_dir()
     schedule_removed = (
-        SchedulerService(repository_root(), state_root).uninstall()
-        if agents is None
-        else []
+        SchedulerService(repository_root(), state_root).uninstall() if agents is None else []
     )
     selected = _agent_names(agents) if agents else None
     removed = LifecycleService(

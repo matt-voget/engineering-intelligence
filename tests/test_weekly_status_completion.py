@@ -1,6 +1,7 @@
 """Target-Date completion math for the weekly status report generator."""
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,42 @@ def hierarchy(key: str, *children: str) -> dict:
 def counts(**overrides: int) -> dict:
     base = {"total": 0, "done": 0, "in_progress": 0, "not_started": 0, "unknown": 0}
     return {**base, **overrides}
+
+
+def test_run_json_materializes_then_reuses_snapshot_cache(generator, tmp_path, monkeypatch):
+    source = tmp_path / "sources.yaml"
+    teams = tmp_path / "teams.yaml"
+    source.write_text("github: {}", encoding="utf-8")
+    teams.write_text("teams: []", encoding="utf-8")
+    generator.configure_query_cache(tmp_path / "cache", source, teams)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, '{"value": 42}', "")
+
+    monkeypatch.setattr(generator.subprocess, "run", fake_run)
+    assert generator.run_json(["example", "get"], tmp_path) == {"value": 42}
+    assert generator.run_json(["example", "get"], tmp_path) == {"value": 42}
+    assert len(calls) == 1
+    assert generator._query_cache_stats == {"hits": 1, "misses": 1}
+
+
+def test_run_json_fails_loudly_on_corrupt_cache(generator, tmp_path, monkeypatch):
+    source = tmp_path / "sources.yaml"
+    teams = tmp_path / "teams.yaml"
+    source.write_text("github: {}", encoding="utf-8")
+    teams.write_text("teams: []", encoding="utf-8")
+    generator.configure_query_cache(tmp_path / "cache", source, teams)
+    cache_path = generator._query_cache_path(["example", "get"])
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(
+        generator.subprocess, "run",
+        lambda *args, **kwargs: pytest.fail("corrupt cache must not be silently recomputed"),
+    )
+    with pytest.raises(RuntimeError, match="Invalid report cache entry"):
+        generator.run_json(["example", "get"], tmp_path)
 
 
 def test_done_column_is_the_numerator_per_month(generator):
@@ -349,3 +386,36 @@ def test_legend_keys_only_the_states_present(generator):
     assert "In progress" not in legend
     assert "Unknown" not in legend
     assert generator.completion_legend_html(counts()) == ""
+
+
+def test_github_finder_embeds_compact_paged_records_and_controls(generator):
+    html = generator.github_finder_section({
+        "records": [{
+            "record_type": "pull_request", "repository": "acme/api",
+            "identifier": "#42", "title": "Ship finder", "url": "https://github/pr/42",
+            "state": "merged", "draft": False, "author_login": "octocat",
+            "created_at": "2026-08-01T00:00:00Z", "updated_at": "2026-08-02T00:00:00Z",
+            "merged_at": "2026-08-03T00:00:00Z", "authored_at": None,
+            "committed_at": None, "head_ref": "finder", "base_ref": "main",
+            "commit_count": 2, "review_count": 1, "reviewers": ["reviewer"],
+            "first_reviewed_at": "2026-08-01T12:00:00Z",
+            "pickup_hours": 12.0, "review_hours": 36.0,
+            "pull_requests": [], "jira_keys": ["ENG-1"],
+            "jira_urls": {"ENG-1": "https://jira/ENG-1"},
+        }],
+        "data_quality_notes": ["Pinned evidence."],
+    }, {"people": [
+        {"github_login": "octocat", "current_teams": ["A2A"]},
+        {"github_login": "reviewer", "current_teams": ["Foundations"]},
+    ]})
+    assert 'class="github-finder-table"' in html
+    assert 'data-gh-filter="repository"' in html
+    assert 'data-gh-filter="reviewer"' in html
+    assert 'data-gh-filter="authorTeam"' in html
+    assert 'data-gh-filter="reviewerTeam"' in html
+    assert 'class="column-manager github-column-manager"' in html
+    assert 'id="github-finder-data"' in html
+    assert "Ship finder" in html and "ENG-1" in html
+    assert "pickupHours" in generator.JS and "PR pickup time" in generator.JS
+    assert "reviewHours" in generator.JS and "PR review time" in generator.JS
+    assert "A2A" in html and "Foundations" in html

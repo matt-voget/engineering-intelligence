@@ -10,6 +10,7 @@ import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -37,6 +38,7 @@ class SchedulerState(BaseModel):
     jira_keychain_service: str | None = None
     jira_keychain_account: str | None = None
     jira_token_env: str = "ATLASSIAN_API_TOKEN"
+    mode: str = "incremental"
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -77,6 +79,7 @@ class SchedulerService:
         jira_keychain_account: str | None = None,
         jira_token_env: str = "ATLASSIAN_API_TOKEN",
         installed_at: datetime | None = None,
+        mode: Literal["incremental", "reconcile", "full"] = "incremental",
     ) -> SchedulerState:
         if not 0 <= hour <= 23 or not 0 <= minute <= 59:
             raise ValueError("Schedule hour/minute is outside the valid range")
@@ -130,6 +133,7 @@ class SchedulerService:
                 jira_keychain_service,
                 jira_keychain_account,
                 jira_token_env,
+                mode,
             )
         )
         wrapper.chmod(0o700)
@@ -152,6 +156,7 @@ class SchedulerService:
             jira_keychain_service=jira_keychain_service,
             jira_keychain_account=jira_keychain_account,
             jira_token_env=jira_token_env,
+            mode=mode,
         )
         try:
             if self.system_name == "Darwin":
@@ -259,12 +264,15 @@ class SchedulerService:
         jira_keychain_service: str | None,
         jira_keychain_account: str | None,
         jira_token_env: str,
+        mode: str,
     ) -> str:
         arguments = [
             str(uv),
             "--directory",
             str(self.repository_root),
             "run",
+            "--mode",
+            mode,
             "engintel",
             "refresh",
             "run",
@@ -340,6 +348,7 @@ class SchedulerService:
             "StandardOutPath": str(logs / "scheduled-refresh.log"),
             "StandardErrorPath": str(logs / "scheduled-refresh.error.log"),
             "ProcessType": "Background",
+            "ThrottleInterval": 30,
         }
         with plist.open("wb") as stream:
             plistlib.dump(payload, stream, sort_keys=True)
@@ -362,6 +371,7 @@ class SchedulerService:
         service.write_text(
             "[Unit]\nDescription=Engineering Intelligence refresh\n\n"
             "[Service]\nType=oneshot\n"
+            "Restart=on-failure\nRestartSec=30\n"
             f"ExecStart={wrapper}\n"
         )
         timer.write_text(

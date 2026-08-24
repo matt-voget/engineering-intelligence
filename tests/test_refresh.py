@@ -1,19 +1,30 @@
 import json
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from engineering_intelligence.config import SourceConfig, TeamsConfig
+from sqlalchemy import func, select
+
+from engineering_intelligence.config import (
+    GitHubRepositoryConfig,
+    JiraQueryConfig,
+    SourceConfig,
+    TeamsConfig,
+)
 from engineering_intelligence.individual_cache import load_cached_individual
 from engineering_intelligence.persistence.database import (
     create_sqlite_engine,
     session_factory,
 )
-from engineering_intelligence.persistence.models import Snapshot
+from engineering_intelligence.persistence.models import JiraIssueVersion, Snapshot
 from engineering_intelligence.refresh import RefreshService
 from engineering_intelligence.refresh.service import (
     _accountable_jira_ids,
     _accountable_work_jql,
+    _completed_progress_sources,
+    load_run_state,
 )
 from engineering_intelligence.runtime import runtime_paths
 from engineering_intelligence.snapshot_selection import latest_snapshot
@@ -22,8 +33,10 @@ FIXTURES = Path(__file__).parent / "fixtures/jira"
 
 
 class FixtureClient:
-    def get_board_configuration(self, _board_id: int) -> dict[str, Any]:
-        return json.loads((FIXTURES / "board_2168.json").read_text())
+    def get_board_configuration(self, board_id: int) -> dict[str, Any]:
+        payload = json.loads((FIXTURES / "board_2168.json").read_text())
+        payload["id"] = board_id
+        return payload
 
     def iter_board_issues(
         self,
@@ -53,6 +66,64 @@ class FailingClient(FixtureClient):
         raise RuntimeError("fixture source unavailable")
 
 
+class InterruptedClient(FixtureClient):
+    def get_board_configuration(self, _board_id: int) -> dict[str, Any]:
+        raise KeyboardInterrupt
+
+
+class InterruptSecondClient(FixtureClient):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_board_configuration(self, _board_id: int) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls == 2:
+            raise KeyboardInterrupt
+        return super().get_board_configuration(_board_id)
+
+
+class ConcurrentGitHubClient:
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    def get_repository(self, full_name: str) -> dict[str, Any]:
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        time.sleep(0.05)
+        with self.lock:
+            self.active -= 1
+        return {
+            "id": {"org/one": 1, "org/two": 2}[full_name],
+            "full_name": full_name,
+            "html_url": f"https://github.com/{full_name}",
+            "default_branch": "main",
+            "private": True,
+            "archived": False,
+        }
+
+    def iter_pull_requests(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return []
+
+
+class ConcurrentJiraClient(FixtureClient):
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    def iter_jql_issues(self, _jql: str, *, fields=None) -> list[dict[str, Any]]:
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        time.sleep(0.05)
+        with self.lock:
+            self.active -= 1
+        return [json.loads((FIXTURES / "issue_idn_1.json").read_text())]
+
+
 def _source_config() -> SourceConfig:
     return SourceConfig.model_validate(
         {
@@ -61,7 +132,9 @@ def _source_config() -> SourceConfig:
                 "email": "fixture@example.com",
                 "token_env": "FIXTURE_JIRA_TOKEN",
                 "team_field_id": "customfield_12345",
-                "boards": [{"id": 2168, "name": "IBR", "role": "portfolio"}],  # legacy alias for ibr
+                "boards": [
+                    {"id": 2168, "name": "IBR", "role": "portfolio"}
+                ],  # legacy alias for ibr
             },
             "github": {
                 "api_url": "https://api.github.com",
@@ -135,8 +208,7 @@ def test_accountable_work_scope_uses_active_deduplicated_jira_identities() -> No
 
     assert ids == ["account:tenshin"]
     assert _accountable_work_jql(ids) == (
-        'assignee in ("account:tenshin") '
-        'AND statusCategory != "Done"'
+        'assignee in ("account:tenshin") AND statusCategory != "Done"'
     )
 
 
@@ -156,6 +228,7 @@ def test_refresh_creates_pinned_snapshot_flags_receipt_and_backup(
     )
 
     assert receipt.status == "completed"
+    assert receipt.mode == "incremental"
     assert receipt.snapshot_name == "refresh-fixture"
     assert receipt.organization_config_hash
     assert receipt.source_config_hash
@@ -171,11 +244,7 @@ def test_refresh_creates_pinned_snapshot_flags_receipt_and_backup(
     assert json.loads(latest.read_text())["refresh_id"] == receipt.refresh_id
     progress = json.loads(
         (
-            paths.root
-            / "receipts"
-            / "refresh"
-            / "progress"
-            / f"{receipt.refresh_id}.json"
+            paths.root / "receipts" / "refresh" / "progress" / f"{receipt.refresh_id}.json"
         ).read_text()
     )
     assert progress["status"] == "completed"
@@ -195,12 +264,20 @@ def test_refresh_creates_pinned_snapshot_flags_receipt_and_backup(
         "complete",
     ]
     completed_source = next(
-        event
-        for event in progress["events"]
-        if event["status"] == "completed_source"
+        event for event in progress["events"] if event["status"] == "completed_source"
     )
     assert completed_source["source"] == "jira:board:2168"
     assert completed_source["records_seen"] == 1
+    assert completed_source["records_new"] == 1
+    assert completed_source["records_updated"] == 0
+    assert completed_source["records_reused"] == 0
+    assert "1 issues checked" in completed_source["message"]
+    run_root = paths.root / "receipts" / "refresh" / "runs" / receipt.refresh_id
+    state = json.loads((run_root / "state.json").read_text())
+    assert state["status"] == "completed"
+    assert state["tasks"][0]["status"] == "completed"
+    events = [json.loads(line) for line in (run_root / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["status"] == "completed"
 
     sessions = session_factory(create_sqlite_engine(paths.database))
     with sessions() as session:
@@ -235,10 +312,172 @@ def test_refresh_failure_is_saved_as_receipt(tmp_path: Path) -> None:
     latest = paths.root / "receipts" / "refresh" / "latest.json"
     assert json.loads(latest.read_text())["status"] == "failed"
     progress = json.loads(
-        (
-            paths.root / "receipts" / "refresh" / "progress" / "latest.json"
-        ).read_text()
+        (paths.root / "receipts" / "refresh" / "progress" / "latest.json").read_text()
     )
     assert progress["status"] == "failed"
     assert progress["events"][-1]["stage"] == "failed"
     assert "fixture source unavailable" in progress["events"][-1]["message"]
+
+
+def test_completed_progress_sources_supports_interrupted_resume(tmp_path: Path) -> None:
+    progress_dir = tmp_path / "receipts" / "refresh" / "progress"
+    progress_dir.mkdir(parents=True)
+    (progress_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "status": "completed_source",
+                        "source": "jira:board:2168",
+                    },
+                    {"status": "running", "source": "github:org/current"},
+                    {
+                        "status": "failed_source",
+                        "source": "github:org/failed",
+                    },
+                    {
+                        "status": "completed_source",
+                        "source": "github:org/done",
+                    },
+                ]
+            }
+        )
+    )
+
+    assert _completed_progress_sources(tmp_path) == {
+        "jira:board:2168",
+        "github:org/done",
+    }
+
+
+def test_refresh_interruption_is_saved_as_cancelled(tmp_path: Path) -> None:
+    paths = runtime_paths(tmp_path / "data")
+
+    receipt = RefreshService().run(
+        paths,
+        _source_config(),
+        _teams_config(),
+        jira_client=InterruptedClient(),
+    )
+
+    assert receipt.status == "cancelled"
+    state = json.loads(
+        (
+            paths.root
+            / "receipts"
+            / "refresh"
+            / "runs"
+            / receipt.refresh_id
+            / "state.json"
+        ).read_text()
+    )
+    assert state["status"] == "cancelled"
+    assert "KeyboardInterrupt" in state["error"]
+
+
+def test_run_specific_resume_reuses_completed_manifest_tasks(tmp_path: Path) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    source_config = _source_config().model_copy(deep=True)
+    source_config.jira.boards.append(
+        source_config.jira.boards[0].model_copy(update={"id": 2169, "name": "Second"})
+    )
+    first = RefreshService().run(
+        paths,
+        source_config,
+        _teams_config(),
+        jira_client=InterruptSecondClient(),
+    )
+    assert first.status == "cancelled"
+
+    resumed = RefreshService().run(
+        paths,
+        source_config,
+        _teams_config(),
+        jira_client=FixtureClient(),
+        resume_refresh_id=first.refresh_id,
+    )
+
+    assert resumed.status == "completed", resumed.error
+    assert resumed.refresh_id == first.refresh_id
+    state = load_run_state(paths.root, first.refresh_id)
+    assert state.status == "completed"
+    assert [task.status for task in state.tasks] == ["completed", "completed"]
+    assert [task.attempt for task in state.tasks] == [1, 2]
+
+
+def test_status_reconciles_an_expired_running_lease(tmp_path: Path) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    receipt = RefreshService().run(
+        paths,
+        _source_config(),
+        _teams_config(),
+        jira_client=FixtureClient(),
+    )
+    state_path = (
+        paths.root
+        / "receipts"
+        / "refresh"
+        / "runs"
+        / receipt.refresh_id
+        / "state.json"
+    )
+    payload = json.loads(state_path.read_text())
+    payload["status"] = "running"
+    payload["lease_expires_at"] = "2026-01-01T00:00:00Z"
+    state_path.write_text(json.dumps(payload))
+
+    state = load_run_state(
+        paths.root,
+        receipt.refresh_id,
+        observed_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    assert state.status == "stale"
+    assert "lease expired" in (state.error or "")
+
+
+def test_github_repositories_refresh_with_bounded_workers(tmp_path: Path) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    source_config = _source_config().model_copy(deep=True)
+    source_config.github.repositories = [
+        GitHubRepositoryConfig(full_name="org/one"),
+        GitHubRepositoryConfig(full_name="org/two"),
+    ]
+    github_client = ConcurrentGitHubClient()
+
+    receipt = RefreshService().run(
+        paths,
+        source_config,
+        _teams_config(),
+        jira_client=FixtureClient(),
+        github_client=github_client,
+    )
+
+    assert receipt.status == "completed", receipt.error
+    assert github_client.max_active == 2
+    assert {run["repository"] for run in receipt.github_runs} == {"org/one", "org/two"}
+
+
+def test_overlapping_jira_queries_refresh_concurrently_without_duplicate_versions(
+    tmp_path: Path,
+) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    source_config = _source_config().model_copy(deep=True)
+    source_config.jira.queries = [
+        JiraQueryConfig(id="one", name="One", purpose="test", jql="project = IDN"),
+        JiraQueryConfig(id="two", name="Two", purpose="test", jql="project = IDN"),
+    ]
+    jira_client = ConcurrentJiraClient()
+
+    receipt = RefreshService().run(
+        paths,
+        source_config,
+        _teams_config(),
+        jira_client=jira_client,
+    )
+
+    assert receipt.status == "completed", receipt.error
+    assert jira_client.max_active == 2
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    with sessions() as session:
+        assert session.scalar(select(func.count()).select_from(JiraIssueVersion)) == 1

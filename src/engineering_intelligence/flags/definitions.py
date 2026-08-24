@@ -269,29 +269,29 @@ DASHBOARD_SIGNAL_DEFINITIONS = (
     ),
     SignalDefinitionSpec(
         definition_key="pull-request-aging-open",
-        version="1.0.0",
+        version="1.2.0",
         category="flow_and_delivery",
         scope_type="pull_request",
         area="github_pull_request_aging",
         dimension="open_age_days",
-        title="Jira-attributed pull request is aging",
+        title="Team-authored pull request is aging",
         description=(
-            "Detect an open pull request attributed to the team through a direct Jira "
-            "relationship that has been open for at least 14 days."
+            "Detect an open pull request authored by a configured team member that "
+            "has been open for at least 14 days."
         ),
         comparison_basis="absolute_rule",
         parameters={
             "measure": "open_age_days",
             "operator": "greater_than_or_equal",
             "value": 14,
-            "requires": "direct_jira_relationship_with_team",
+            "team_attribution": "configured_author_identity",
         },
         severity_policy={"when_triggered": "watch"},
         confidence_policy={
             "level": "high",
-            "requires": ["github_pull_request_history", "direct_jira_relationship"],
+            "requires": ["github_pull_request_history", "configured_author_identity"],
         },
-        effective_from=datetime(2026, 7, 29, tzinfo=UTC),
+        effective_from=datetime(2026, 8, 19, tzinfo=UTC),
     ),
     SignalDefinitionSpec(
         definition_key="pull-request-missing-jira-attribution",
@@ -324,7 +324,7 @@ DASHBOARD_SIGNAL_DEFINITIONS = (
     ),
     SignalDefinitionSpec(
         definition_key="team-review-load-concentration",
-        version="1.0.0",
+        version="1.1.0",
         category="collaboration",
         scope_type="team",
         area="github_review_concentration",
@@ -332,7 +332,8 @@ DASHBOARD_SIGNAL_DEFINITIONS = (
         title="Review load is concentrated",
         description=(
             "Detect when one reviewer submitted at least 60 percent of at least ten "
-            "human reviews on Jira-attributed team pull requests in the trailing 30 days."
+            "human reviews submitted by configured team members across all configured "
+            "repositories in the trailing 30 days."
         ),
         comparison_basis="absolute_rule",
         parameters={
@@ -342,13 +343,14 @@ DASHBOARD_SIGNAL_DEFINITIONS = (
             "window_days": 30,
             "minimum_sample_size": 10,
             "exclude_authors_ending_with": "[bot]",
+            "team_attribution": "configured_reviewer_identity",
         },
         severity_policy={"when_triggered": "watch"},
         confidence_policy={
             "level": "medium",
-            "requires": ["github_reviews", "direct_jira_relationship"],
+            "requires": ["github_reviews", "configured_reviewer_identity"],
             "limitations": ["Review comments outside GitHub reviews are not included"],
         },
-        effective_from=datetime(2026, 7, 29, tzinfo=UTC),
+        effective_from=datetime(2026, 8, 19, tzinfo=UTC),
     ),
 )

@@ -7,6 +7,8 @@ from typing import Any, Self
 
 import httpx
 
+from engineering_intelligence.ingestion.limiter import RequestLimiter
+
 
 class JiraClient:
     """Access the Jira Agile API with bounded pagination and retries."""
@@ -20,8 +22,10 @@ class JiraClient:
         timeout_seconds: float = 30,
         max_retries: int = 3,
         transport: httpx.BaseTransport | None = None,
+        limiter: RequestLimiter | None = None,
     ) -> None:
         self.max_retries = max_retries
+        self.limiter = limiter or RequestLimiter(1)
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             auth=httpx.BasicAuth(email, token),
@@ -139,6 +143,30 @@ class JiraClient:
             if page.get("isLast", not next_page_token) or not next_page_token:
                 break
 
+    def iter_issue_details(
+        self,
+        issue_ids_or_keys: list[str],
+        *,
+        fields: list[str],
+        issue_batch_size: int = 100,
+    ) -> Iterator[dict[str, Any]]:
+        """Fetch full issue fields for a validated delta in bounded JQL batches."""
+        invalid = [
+            value
+            for value in issue_ids_or_keys
+            if not (value.isdigit() or re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", value))
+        ]
+        if invalid:
+            raise ValueError(f"Invalid Jira issue IDs or keys: {invalid}")
+        for start in range(0, len(issue_ids_or_keys), issue_batch_size):
+            batch = issue_ids_or_keys[start : start + issue_batch_size]
+            identifiers = ", ".join(value if value.isdigit() else f'"{value}"' for value in batch)
+            yield from self.iter_jql_issues(
+                f"id in ({identifiers}) ORDER BY key ASC",
+                fields=fields,
+                page_size=issue_batch_size,
+            )
+
     def iter_issue_changelogs(
         self,
         issue_ids_or_keys: list[str],
@@ -185,7 +213,8 @@ class JiraClient:
     ) -> dict[str, Any]:
         attempt = 0
         while True:
-            response = self._client.request(method, path, params=params, json=json)
+            with self.limiter.slot():
+                response = self._client.request(method, path, params=params, json=json)
             if response.status_code not in {429, 500, 502, 503, 504}:
                 response.raise_for_status()
                 return response.json()

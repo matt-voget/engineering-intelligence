@@ -36,6 +36,10 @@ from engineering_intelligence.presentations.team_work import (
     TeamWorkClassification,
     WorkSplit,
 )
+from engineering_intelligence.queries.build_cycle import (
+    _timeline,
+    workflow_cycle_metrics,
+)
 from engineering_intelligence.queries.dashboard import DashboardQuery, _as_utc
 from engineering_intelligence.queries.team import _team_config
 from engineering_intelligence.snapshots.organization import (
@@ -57,6 +61,8 @@ class TeamWorkQuery:
         snapshot_identifier: str,
         team_identifier: str,
         teams_config: TeamsConfig,
+        *,
+        include_all_jira: bool = False,
     ) -> TeamWorkClassification:
         with self.sessions() as session:
             snapshot = DashboardQuery._snapshot(session, snapshot_identifier)
@@ -182,10 +188,24 @@ class TeamWorkQuery:
                     updated = (
                         _as_utc(version.source_updated_at) if version.source_updated_at else None
                     )
-                    if not active and (updated is None or updated < list_floor):
+                    if (
+                        not include_all_jira
+                        and not active
+                        and (updated is None or updated < list_floor)
+                    ):
                         continue
-                    classification, basis, ancestor_id = classify_issue(issue_id, high_water)
-                    ancestor = session.get(JiraIssue, ancestor_id) if ancestor_id else None
+                    classification, basis, ancestor_id = classify_issue(
+                        issue_id, high_water
+                    )
+                    ancestor = (
+                        session.get(JiraIssue, ancestor_id) if ancestor_id else None
+                    )
+                    timeline = _timeline(session, issue_id, high_water)
+                    cycle_metrics = (
+                        workflow_cycle_metrics(timeline, high_water)
+                        if timeline is not None
+                        else None
+                    )
                     jira_issues.append(
                         ClassifiedJiraIssue(
                             jira_key=issue.issue_key,
@@ -202,6 +222,21 @@ class TeamWorkQuery:
                             ibr_parent_key=ancestor.issue_key if ancestor else None,
                             ibr_parent_url=ancestor.web_url if ancestor else None,
                             active=active,
+                            total_cycle_days=(
+                                cycle_metrics.total_days if cycle_metrics else None
+                            ),
+                            in_progress_cycle_days=(
+                                cycle_metrics.in_progress_days if cycle_metrics else None
+                            ),
+                            in_review_cycle_days=(
+                                cycle_metrics.in_review_days if cycle_metrics else None
+                            ),
+                            in_test_cycle_days=(
+                                cycle_metrics.in_test_days if cycle_metrics else None
+                            ),
+                            skipped_phases=(
+                                cycle_metrics.skipped_phases if cycle_metrics else []
+                            ),
                         )
                     )
                     if active:
@@ -486,7 +521,8 @@ class TeamWorkQuery:
             reverse=True,
         )
         message = (
-            "GitHub records within the list window are classified through explicit "
-            "Jira keys, inherited pull-request keys, or configured author identity."
+            "GitHub records within the list window are attributed to this team only "
+            "through configured member usernames. Jira keys classify attributed "
+            "records as IBR-linked or non-IBR but do not assign a team."
         )
         return records, split, True, message

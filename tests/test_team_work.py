@@ -53,7 +53,19 @@ class JiraClient:
         bug["fields"]["summary"] = "Maintain Edge Stack release tooling"
         bug["fields"]["issuetype"] = {"id": "10004", "name": "Bug"}
         bug["fields"]["parent"] = None
-        return [child, bug]
+        old_done = json.loads((FIXTURES / "issue_idn_2.json").read_text())
+        old_done["id"] = "88888"
+        old_done["key"] = "ES-88"
+        old_done["self"] = "https://gravitee.atlassian.net/rest/api/3/issue/88888"
+        old_done["fields"]["summary"] = "Completed historical team work"
+        old_done["fields"]["updated"] = "2025-01-01T12:00:00.000+0000"
+        old_done["fields"]["status"] = {
+            "id": "10003",
+            "name": "Done",
+            "statusCategory": {"id": 3, "key": "done", "name": "Done"},
+        }
+        old_done["fields"]["parent"] = None
+        return [child, bug, old_done]
 
 
 class GitHubClient:
@@ -233,11 +245,9 @@ def test_team_work_classifies_jira_and_github_records(tmp_path: Path) -> None:
     assert inherited.classification == "ibr_linked"
     assert inherited.link_basis == "via_pull_request"
     assert inherited.jira_keys == ["IDN-2"]
-    # A review inherits the pull request's keys even for an outside reviewer,
-    # because the linked issue carries this team's Team field.
-    review = records[("review", "7001")]
-    assert review.classification == "ibr_linked"
-    assert review.link_basis == "via_pull_request"
+    # An outside review is not attributed to this team merely because its pull
+    # request links to Jira work carrying the team's Team field.
+    assert ("review", "7001") not in records
     # A keyless pull request by a configured member stays visible as unlinked.
     unlinked = records[("pull_request", "gravitee-io/example#18")]
     assert unlinked.classification == "unlinked"
@@ -246,9 +256,18 @@ def test_team_work_classifies_jira_and_github_records(tmp_path: Path) -> None:
     non_ibr = records[("pull_request", "gravitee-io/example#19")]
     assert non_ibr.classification == "non_ibr"
     assert non_ibr.jira_keys == ["ES-99"]
-    assert work.github_split.ibr_linked == 4
+    assert work.github_split.ibr_linked == 3
     assert work.github_split.non_ibr == 1
     assert work.github_split.unlinked == 1
+
+    all_work = TeamWorkQuery(sessions).get(
+        "work-fixture", "a2a", teams, include_all_jira=True
+    )
+    assert {item.jira_key for item in all_work.jira_issues} == {
+        "IDN-2",
+        "ES-99",
+        "ES-88",
+    }
 
 
 def test_team_work_reports_missing_scope_as_unavailable(tmp_path: Path) -> None:

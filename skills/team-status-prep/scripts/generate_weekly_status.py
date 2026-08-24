@@ -4,13 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import html
 import json
 import os
 import re
 import subprocess
+import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+
+LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "engineering-intelligence-logo.png"
+REPORT_CACHE_VERSION = "1"
+_query_cache_dir: Path | None = None
+_query_cache_context = ""
+_query_cache_rebuild = False
+_query_cache_stats = {"hits": 0, "misses": 0}
 
 
 def esc(value: object) -> str:
@@ -18,13 +29,58 @@ def esc(value: object) -> str:
 
 
 def run_json(args: list[str], data_dir: Path) -> dict:
+    cache_path = _query_cache_path(args)
+    if cache_path is not None and cache_path.exists() and not _query_cache_rebuild:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Invalid report cache entry {cache_path}: {exc}") from exc
+        if cached.get("args") != args or cached.get("version") != REPORT_CACHE_VERSION:
+            raise RuntimeError(f"Mismatched report cache entry {cache_path}")
+        _query_cache_stats["hits"] += 1
+        return cached["payload"]
+    _query_cache_stats["misses"] += 1
+    print(f"report materialization: {' '.join(args[:4])}", file=sys.stderr, flush=True)
     env = os.environ.copy()
-    env.setdefault("UV_CACHE_DIR", "/private/tmp/engintel-uv-cache")
+    env.setdefault("UV_CACHE_DIR", str(Path(tempfile.gettempdir()) / "engintel-uv-cache"))
     result = subprocess.run(
         ["uv", "run", "engintel", *args, "--data-dir", str(data_dir), "--format", "json"],
         check=True, capture_output=True, text=True, env=env,
     )
-    return json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        envelope = {"version": REPORT_CACHE_VERSION, "args": args, "payload": payload}
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=cache_path.parent, delete=False
+        ) as handle:
+            json.dump(envelope, handle, separators=(",", ":"))
+            temporary_path = Path(handle.name)
+        os.replace(temporary_path, cache_path)
+    return payload
+
+
+def configure_query_cache(
+    cache_dir: Path, source_config: Path, teams_config: Path, *, rebuild: bool = False
+) -> None:
+    global _query_cache_dir, _query_cache_context, _query_cache_rebuild
+    _query_cache_dir = cache_dir
+    _query_cache_context = hashlib.sha256(
+        source_config.read_bytes() + b"\0" + teams_config.read_bytes()
+    ).hexdigest()
+    _query_cache_rebuild = rebuild
+    _query_cache_stats.update(hits=0, misses=0)
+
+
+def _query_cache_path(args: list[str]) -> Path | None:
+    if _query_cache_dir is None:
+        return None
+    key = hashlib.sha256(json.dumps({
+        "version": REPORT_CACHE_VERSION,
+        "context": _query_cache_context,
+        "args": args,
+    }, sort_keys=True).encode()).hexdigest()
+    return _query_cache_dir / f"{key}.json"
 
 
 def link(url: str | None, label: object) -> str:
@@ -845,6 +901,345 @@ def team_work_section(work: dict | None) -> str:
       <details><summary>Classification notes</summary><ul>{notes}</ul></details>'''
 
 
+def issue_finder_section(issues: list[dict]) -> str:
+    teams = sorted({item["team_name"] for item in issues}, key=str.casefold)
+    statuses = sorted(
+        {item.get("status") or "Unknown" for item in issues}, key=str.casefold
+    )
+    classifications = sorted({item.get("classification") or "unknown" for item in issues})
+
+    def options(values: list[str], labels: dict[str, str] | None = None) -> str:
+        return "".join(
+            f'<option value="{esc(value)}">{esc((labels or {}).get(value, value))}</option>'
+            for value in values
+        )
+
+    controls = (
+        '<div class="finder-filters">'
+        '<label>Team <select data-finder-field="issueTeam"><option value="">All teams</option>'
+        f'{options(teams)}</select></label>'
+        '<label>Status <select data-finder-field="issueStatus"><option value="">All statuses</option>'
+        f'{options(statuses)}</select></label>'
+        '<label>Classification <select data-finder-field="issueClassification"><option value="">All classifications</option>'
+        f'{options(classifications, {"ibr_linked": "IBR-linked", "non_ibr": "Non-IBR"})}</select></label>'
+        '<label>Highlight <select data-finder-attention><option value="">All rows</option>'
+        '<option value="flagged">Any Red or Amber</option><option value="red">Red</option>'
+        '<option value="amber">Amber</option><option value="missing">Missing/incomplete</option>'
+        '</select></label>'
+        '<button class="toggle" type="button" data-finder-clear>Clear filters</button>'
+        '<span class="finder-count" aria-live="polite"></span></div>'
+    )
+    column_manager = (
+        '<details class="column-manager"><summary>Manage columns</summary>'
+        '<p class="table-note">Move visible columns or remove them from this view. '
+        'Removed columns can be added back.</p>'
+        '<div class="column-manager-visible" data-column-list></div>'
+        '<div class="column-add"><label>Add column <select data-column-add-select>'
+        '</select></label><button class="toggle" type="button" data-column-add>'
+        'Add</button></div></details>'
+    )
+    threshold_manager = (
+        '<details class="threshold-manager"><summary>Configure cell thresholds</summary>'
+        '<p class="table-note">Values are calendar days. Blank thresholds do not '
+        'assess that metric. Red takes precedence over Amber.</p>'
+        '<div class="threshold-grid"><strong>Metric</strong><strong>Amber at ≥</strong>'
+        '<strong>Red at ≥</strong>'
+        + "".join(
+            f'<label>{label}</label><input type="number" min="0" step="0.01" '
+            f'data-threshold-metric="{metric}" data-threshold-level="amber" '
+            f'aria-label="{label} Amber threshold"><input type="number" min="0" '
+            f'step="0.01" data-threshold-metric="{metric}" data-threshold-level="red" '
+            f'aria-label="{label} Red threshold">'
+            for metric, label in (
+                ("total-cycle", "Total cycle time"),
+                ("in-progress-cycle", "In Progress"),
+                ("in-review-cycle", "In Review"),
+                ("in-test-cycle", "In Test"),
+            )
+        )
+        + '</div><div class="threshold-actions"><button class="toggle" type="button" '
+        'data-threshold-clear>Clear thresholds</button><span class="table-note" '
+        'data-threshold-note aria-live="polite"></span></div></details>'
+    )
+
+    def pull_links(item: dict) -> str:
+        pulls = item.get("linked_pull_requests", [])
+        return ", ".join(
+            link(pull.get("url"), f"#{pull['record_id'].rsplit('#', 1)[-1]}")
+            for pull in pulls
+        ) if pulls else '<span class="muted">—</span>'
+
+    def cycle_cell(item: dict, field: str, metric: str) -> str:
+        value = item.get(field)
+        current_status = (item.get("status") or "").strip().casefold()
+        workflow_started = current_status in {
+            "in progress", "in code review", "ready for test", "in testing",
+            "ready for docs", "done",
+        }
+        if value is None:
+            quality = (
+                ' quality-missing" title="Missing In Progress transition history"'
+                if workflow_started else '"'
+            )
+            return f'<td class="num metric-cell{quality} data-metric="{metric}"><span class="muted">—</span></td>'
+        return f'<td class="num metric-cell" data-metric="{metric}" data-value="{value}">{value:.2f}d</td>'
+
+    rows = "".join(
+        f'''<tr data-date="{date_attr(item.get('source_updated_at'))}"
+        data-issue-team="{esc(item['team_name'])}"
+        data-issue-status="{esc(item.get('status') or 'Unknown')}"
+        data-issue-classification="{esc(item.get('classification') or 'unknown')}">
+        <td>{link(item.get("url"), item.get("jira_key"))}</td>
+        <td>{esc(item["team_name"])}</td>
+        <td class="{'quality-missing' if not item.get('issue_type') else ''}">{esc(item.get("issue_type") or "Unknown")}</td>
+        <td class="{'quality-missing' if not item.get('status') else ''}">{esc(item.get("status") or "Unknown")}{'' if item.get("active") else ' <span class="muted">(done)</span>'}</td>
+        <td class="{'quality-missing' if not item.get('assignee_display_name') else ''}">{esc(item.get("assignee_display_name") or "Unassigned")}</td>
+        <td class="{'quality-missing' if not item.get('source_updated_at') else ''}"><time datetime="{esc(item.get('source_updated_at'))}">{esc(display_date(item.get('source_updated_at')))}</time></td>
+        {cycle_cell(item, "total_cycle_days", "total-cycle")}
+        {cycle_cell(item, "in_progress_cycle_days", "in-progress-cycle")}
+        {cycle_cell(item, "in_review_cycle_days", "in-review-cycle")}
+        {cycle_cell(item, "in_test_cycle_days", "in-test-cycle")}
+        <td>{esc(", ".join(item.get("skipped_phases", [])) or "—")}</td>
+        <td>{work_class_badge(item.get("classification"))}</td>
+        <td>{link(item.get("ibr_parent_url"), item.get("ibr_parent_key")) if item.get("ibr_parent_key") else '<span class="muted">—</span>'}</td>
+        <td>{pull_links(item)}</td>
+        <td class="{'quality-missing' if not item.get('title') else ''}">{esc(concise_text(item.get("title"), 160) or "No summary supplied.")}</td></tr>'''
+        for item in issues
+    ) or '<tr><td colspan="15" class="empty">No Jira issues were pinned in the configured team scopes.</td></tr>'
+    return (
+        f'<p class="table-note">{len(issues)} unique Jira issues from the pinned '
+        'team-field query scopes. Duplicate Jira keys are shown once.</p>'
+        + controls
+        + threshold_manager
+        + column_manager
+        + '<div class="table-wrap"><table class="issue-finder-table"><thead><tr>'
+        '<th data-column-key="jira">Jira</th><th data-column-key="team">Team</th>'
+        '<th data-column-key="type">Type</th><th data-column-key="status">Status</th>'
+        '<th data-column-key="assignee">Assignee</th><th data-column-key="updated">Updated</th>'
+        '<th data-column-key="total-cycle">Total cycle time</th>'
+        '<th data-column-key="in-progress-cycle">In Progress cycle time</th>'
+        '<th data-column-key="in-review-cycle">In Review cycle time</th>'
+        '<th data-column-key="in-test-cycle">In Test cycle time</th>'
+        '<th data-column-key="skipped-phases">Skipped phases</th>'
+        '<th data-column-key="classification">Classification</th>'
+        '<th data-column-key="ibr-parent">IBR parent</th>'
+        '<th data-column-key="github-pr">GitHub PR</th>'
+        f'<th data-column-key="description">Short description</th></tr></thead><tbody>{rows}</tbody></table></div>'
+    )
+
+
+def github_finder_section(view: dict, people_directory: dict | None = None) -> str:
+    records = view.get("records", [])
+    people = (people_directory or {}).get("people", [])
+    teams_by_login = {
+        row["github_login"].casefold(): row.get("current_teams", [])
+        for row in people if row.get("github_login")
+    }
+    teams = sorted(
+        {team for memberships in teams_by_login.values() for team in memberships},
+        key=str.casefold,
+    )
+    repositories = sorted({row["repository"] for row in records}, key=str.casefold)
+    states = sorted({row["state"] for row in records if row.get("state")}, key=str.casefold)
+    authors = sorted({row["author_login"] for row in records if row.get("author_login")}, key=str.casefold)
+    reviewers = sorted({login for row in records for login in row.get("reviewers", [])}, key=str.casefold)
+
+    def options(values: list[str]) -> str:
+        return "".join(f'<option value="{esc(value)}">{esc(value)}</option>' for value in values)
+
+    # Short positional rows keep the portable report below Telegram's upload limit.
+    compact = [[
+        row.get("record_type"), row.get("repository"), row.get("identifier"),
+        row.get("title"), row.get("url"), row.get("state"), row.get("draft"),
+        row.get("author_login"), row.get("created_at"), row.get("updated_at"),
+        row.get("merged_at"), row.get("authored_at"), row.get("committed_at"),
+        row.get("head_ref"), row.get("base_ref"), row.get("commit_count"),
+        row.get("review_count"), row.get("reviewers", []),
+        row.get("pull_requests", []), row.get("jira_keys", []), row.get("jira_urls", {}),
+        teams_by_login.get((row.get("author_login") or "").casefold(), []),
+        sorted({
+            team
+            for reviewer in row.get("reviewers", [])
+            for team in teams_by_login.get(reviewer.casefold(), [])
+        }, key=str.casefold),
+        row.get("first_reviewed_at"), row.get("pickup_hours"), row.get("review_hours"),
+    ] for row in records]
+    payload = json.dumps(compact, separators=(",", ":")).replace("</", "<\\/")
+    notes = "".join(f"<li>{esc(note)}</li>" for note in view.get("data_quality_notes", []))
+    return f'''<p class="table-note">{len(records):,} unique records pinned across {len(repositories):,} configured repositories. Results are paged at 100 rows for local-file performance.</p>
+    <div class="finder-filters github-filters">
+      <label>Text <input type="search" data-gh-filter="text" placeholder="Title, SHA, Jira…"></label>
+      <label>Record <select data-gh-filter="type"><option value="">All records</option><option value="pull_request">Pull requests</option><option value="commit">Commits</option></select></label>
+      <label>Repository <select data-gh-filter="repository"><option value="">All repositories</option>{options(repositories)}</select></label>
+      <label>State <select data-gh-filter="state"><option value="">All states</option>{options(states)}</select></label>
+      <label>Author <select data-gh-filter="author"><option value="">All authors</option>{options(authors)}</select></label>
+      <label>Author team <select data-gh-filter="authorTeam"><option value="">All teams</option>{options(teams)}</select></label>
+      <label>Reviewer <select data-gh-filter="reviewer"><option value="">All reviewers</option>{options(reviewers)}</select></label>
+      <label>Reviewer team <select data-gh-filter="reviewerTeam"><option value="">All teams</option>{options(teams)}</select></label>
+      <label>Jira link <select data-gh-filter="jira"><option value="">All records</option><option value="linked">Linked</option><option value="unlinked">Unlinked</option></select></label>
+      <label>From <input type="date" data-gh-filter="from"></label><label>To <input type="date" data-gh-filter="to"></label>
+      <button class="toggle" type="button" data-gh-clear>Clear filters</button><span class="finder-count" data-gh-count aria-live="polite"></span>
+    </div>
+    <details class="column-manager github-column-manager"><summary>Manage columns</summary>
+      <p class="table-note">Move visible columns or remove them from this view. Removed columns can be added back.</p>
+      <div class="column-manager-visible" data-column-list></div><div class="column-add"><label>Add column <select data-column-add-select></select></label><button class="toggle" type="button" data-column-add>Add</button></div>
+    </details>
+    <div class="table-wrap"><table class="github-finder-table"><thead><tr></tr></thead><tbody></tbody></table></div>
+    <div class="github-pager"><button class="toggle" type="button" data-gh-prev>Previous</button><span data-gh-page></span><button class="toggle" type="button" data-gh-next>Next</button></div>
+    <details><summary>Coverage notes</summary><ul>{notes}</ul></details>
+    <script type="application/json" id="github-finder-data">{payload}</script>'''
+
+
+def build_cycle_time_section(view: dict | None) -> str:
+    if not view:
+        return '<p class="empty">Build Cycle Time is unavailable for this team.</p>'
+
+    def status_data(durations: list[dict]) -> str:
+        return esc(json.dumps({item["status"]: item["days"] for item in durations}))
+
+    def child_rows(children: list[dict]) -> str:
+        return "".join(
+            f'''<tr class="cycle-child"><td style="padding-left:{16 + child.get('depth', 1) * 14}px">↳ {link(child.get("url"), child.get("jira_key"))}</td>
+            <td>{esc(child.get("issue_type") or "Unknown")}</td>
+            <td class="num">{f'{child["cycle_days"]:.2f} days' if child.get("cycle_days") is not None else '<span class="muted">Unavailable</span>'}</td>
+            <td>{esc(display_date(child.get("period_started_at")))} → {esc(display_date(child.get("period_ended_at")))}</td>
+            <td>{f'<span class="badge top-status">{esc(child.get("top_status"))}</span>' if child.get("top_status") else '<span class="muted">—</span>'}</td>
+            <td>{esc(child.get("title") or "No summary supplied.")}{f'<br><span class="muted">{esc(child.get("warning"))}</span>' if child.get("warning") else ''}</td></tr>'''
+            for child in children
+        )
+
+    def group_html(classification: str, heading: str) -> str:
+        group = next(
+            (item for item in view.get("groups", []) if item["classification"] == classification),
+            {"contributions": []},
+        )
+        contributions = group.get("contributions", [])
+        rows = "".join(
+            f'''<tbody{rag_anchor_attr(item.get("rag"))} class="cycle-contribution rag-instance" data-cycle-ended="{date_attr(item.get('period_ended_at'))}" data-cycle-days="{item['cycle_days']}" data-status-durations="{status_data(item.get('status_durations', []))}">
+            <tr class="cycle-parent"><td>{rag_badge(item.get("rag"))} {link(item.get("url"), item.get("jira_key"))}</td>
+            <td>{esc(item.get("issue_type") or "Unknown")}</td>
+            <td class="num"><strong>{item['cycle_days']:.2f} days</strong></td>
+            <td>{esc(display_date(item.get("period_started_at")))} → <time datetime="{esc(item.get('period_ended_at'))}">{esc(display_date(item.get("period_ended_at")))}</time></td>
+            <td>{f'<span class="badge top-status">{esc(item.get("top_status"))}</span>' if item.get("top_status") else '<span class="muted">—</span>'}</td>
+            <td>{esc(item.get("title") or "No summary supplied.")}</td></tr>{child_rows(item.get("children", []))}</tbody>'''
+            for item in contributions
+        ) or '<tbody><tr><td colspan="6" class="empty">No qualifying completed issues.</td></tr></tbody>'
+        return f'''<section class="cycle-group date-scope" data-cycle-group="{classification}"><h3>{esc(heading)}</h3>
+        <div class="cycle-summary"><div class="metric"><strong class="cycle-average">—</strong>average calendar days</div><div class="metric"><strong class="cycle-sample">0</strong>qualifying issues</div><div class="metric"><strong class="cycle-top-status">—</strong>top contributing status</div></div>
+        <p class="table-note">Top five contributors to the average for the selected Done-date range. Child rows show their own In Progress-to-Done cycle where complete transition evidence exists.</p>
+        <div class="table-wrap"><table class="cycle-table"><thead><tr><th>Issue</th><th>Type</th><th class="num">Cycle time</th><th>Started → Done</th><th>Top status</th><th>Title</th></tr></thead>{rows}</table></div></section>'''
+
+    notes = "".join(f'<li>{esc(note)}</li>' for note in view.get("data_quality_notes", []))
+    return (
+        '<p class="table-note">IBR-linked work includes Epic, Feature Request, and FDI Request parents. Non-IBR work includes every issue type assigned to the team that is neither on the IBR board nor below an IBR item. The global time filter selects issues by the date they entered Done.</p>'
+        + group_html("ibr_linked", "IBR-linked parent issues")
+        + group_html("non_ibr", "Non-IBR team issues — all issue types")
+        + f'<details><summary>Metric definition and data notes</summary><ul>{notes}</ul></details>'
+    )
+
+
+def rag_anchor_attr(assessment: dict | None) -> str:
+    return f' id="{esc(assessment["anchor_id"])}"' if assessment else ""
+
+
+def rag_badge(assessment: dict | None) -> str:
+    if not assessment:
+        return ""
+    level = assessment["level"]
+    return (
+        f'<span class="rag-badge rag-{esc(level)}" '
+        f'title="{esc(assessment["explanation"])}" '
+        f'aria-label="{esc(level.title())}: {esc(assessment["rule_label"])}">'
+        f'<span aria-hidden="true">{esc(assessment["symbol"])}</span> '
+        f'{esc(level.title())}</span>'
+    )
+
+
+def github_pr_metrics_section(view: dict | None) -> str:
+    if not view:
+        return '<p class="empty">GitHub PR metrics are unavailable for this team.</p>'
+
+    def person(person_ref: dict | None) -> str:
+        if not person_ref:
+            return "Unknown"
+        login = f"@{person_ref['login']}"
+        return (
+            f"{person_ref['display_name']} ({login})"
+            if person_ref.get("display_name")
+            else login
+        )
+
+    def involved(item: dict) -> str:
+        author = f"Author: {person(item.get('author'))}"
+        reviewers = ", ".join(person(reviewer) for reviewer in item.get("reviewers", []))
+        return esc(author + " · Reviewers: " + (reviewers or "Unknown"))
+
+    def metric_group(metric: str, heading: str, explanation: str) -> str:
+        field = f"{metric}_hours"
+        rag_field = f"{metric}_rag"
+        rows = "".join(
+            f'''<tbody{rag_anchor_attr(item.get(rag_field))} class="pr-metric-contribution rag-instance" data-pr-merged="{date_attr(item.get('merged_at'))}" data-metric-hours="{item[field]}"><tr>
+            <td>{rag_badge(item.get(rag_field))} {link(item.get("url"), f'{item["repository"]}#{item["number"]}')}</td>
+            <td class="num"><strong>{item[field]:.2f} hours</strong></td>
+            <td>{esc(display_date(item.get("created_at")))} → {esc(display_date(item.get("first_reviewed_at")))} → <time datetime="{esc(item.get('merged_at'))}">{esc(display_date(item.get("merged_at")))}</time></td>
+            <td>{involved(item)}</td><td>{esc(item.get("title") or "No title supplied.")}</td></tr></tbody>'''
+            for item in view.get("contributions", [])
+        ) or '<tbody><tr><td colspan="5" class="empty">No qualifying merged pull requests.</td></tr></tbody>'
+        return f'''<section class="pr-metric-group date-scope" data-pr-metric="{metric}"><h3>{esc(heading)}</h3>
+        <div class="cycle-summary"><div class="metric"><strong class="pr-metric-average">—</strong>average hours</div><div class="metric"><strong class="pr-metric-sample">0</strong>qualifying pull requests</div></div>
+        <p class="table-note">{esc(explanation)} Top five contributors for the selected merge-date range.</p>
+        <div class="table-wrap"><table class="pr-metric-table"><thead><tr><th>Pull request</th><th class="num">Time</th><th>Created → first review → merged</th><th>Involved people</th><th>Title</th></tr></thead>{rows}</table></div></section>'''
+
+    notes = "".join(f'<li>{esc(note)}</li>' for note in view.get("data_quality_notes", []))
+    repository_count = len(view.get("repositories", []))
+    authors = ", ".join(f"@{login}" for login in view.get("author_logins", [])) or "No active GitHub identities configured"
+    return (
+        f'<p class="table-note">Repository scope: all {repository_count} configured repositories. Author scope: {esc(authors)}. The global time filter selects pull requests by merge date.</p>'
+        + metric_group(
+            "pickup",
+            "Average pickup time",
+            "Elapsed time from PR creation to the first qualifying review.",
+        )
+        + metric_group(
+            "review",
+            "Average review time",
+            "Elapsed time from the first qualifying review to merge.",
+        )
+        + f'<details><summary>Metric definition and data notes</summary><ul>{notes}</ul></details>'
+    )
+
+
+def rag_status_index(team_slug: str, build_cycle: dict | None, github_pr: dict | None) -> str:
+    assessments: list[tuple[dict, str]] = []
+    for group in (build_cycle or {}).get("groups", []):
+        for item in group.get("contributions", []):
+            if item.get("rag"):
+                assessments.append((item["rag"], item["jira_key"]))
+    for item in (github_pr or {}).get("contributions", []):
+        record = f'{item["repository"]}#{item["number"]}'
+        for field in ("pickup_rag", "review_rag"):
+            if item.get(field):
+                assessments.append((item[field], record))
+    if not assessments:
+        return '<p class="muted">No RAG rules are configured for this team.</p>'
+    order = {"red": 0, "amber": 1, "green": 2}
+    assessments.sort(key=lambda pair: (order[pair[0]["level"]], pair[1]))
+    counts = {
+        level: sum(item["level"] == level for item, _record in assessments)
+        for level in ("red", "amber", "green")
+    }
+    links = "".join(
+        f'<li>{rag_badge(item)} <a href="#/teams/{esc(team_slug)}?focus={esc(item["anchor_id"])}">'
+        f'{esc(record)} — {esc(item["rule_label"])}</a></li>'
+        for item, record in assessments
+    )
+    return (
+        '<div class="rag-summary" aria-label="Red amber green status summary">'
+        f'<p>{counts["red"]} red · {counts["amber"]} amber · {counts["green"]} green</p>'
+        f'<ul>{links}</ul></div>'
+    )
+
+
 def team_summaries(
     name: str,
     row: dict,
@@ -1129,7 +1524,7 @@ def person_card(person: dict) -> str:
       <details><summary>Recent linked GitHub work</summary><ul>{gh}</ul></details></article>'''
 
 
-CSS = '''body{margin:0;background:#f4f6fb;color:#172033;font:15px system-ui,sans-serif;line-height:1.5}a{color:#315bd6}nav{position:sticky;top:0;z-index:2;background:#172033;padding:12px 4vw;display:flex;gap:14px;align-items:center;flex-wrap:wrap}nav a{color:white;text-decoration:none}nav input{margin-left:auto;padding:9px;border-radius:7px;border:0;min-width:240px}main{max-width:1200px;margin:auto;padding:35px 24px}h1{font-size:34px}.app-view{display:none}.app-view.active{display:block}.hero,.card,.person,.panel,.team-card{background:white;border:1px solid #dfe4ef;border-radius:14px;padding:20px;margin:14px 0;box-shadow:0 3px 12px #26334d10}.grid,.people-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.team-grid{display:block}.team-grid .team-card{margin:14px 0}.member-list{border-top:1px solid #e7eaf1;margin-top:16px;padding-top:12px}.member-list strong{display:block;margin-bottom:5px}.metric{background:#edf1fb;padding:16px;border-radius:10px}.metric strong{display:block;font-size:27px}.card header,.team-card header{display:flex;justify-content:space-between;gap:15px}.eyebrow{color:#65708a;text-transform:uppercase;font-size:12px;letter-spacing:.08em}.muted{color:#667087}.badge,.person-link{display:inline-block;padding:5px 8px;border-radius:20px;font-size:12px;margin:2px}.person-link{background:#edf1fb;text-decoration:none}.bad{background:#ffe3e1;color:#982d28}.warn{background:#fff0c4;color:#745100}.good{background:#dff6e8;color:#17633b}.tree,.tree ul{list-style:none;padding-left:20px}.issue-row{padding:6px;border-left:2px solid #dce3f5}.depth{display:none}.rollup{color:#425a9b}.health-list{padding-left:22px}.health-list li{margin:7px 0}.activity-tables{margin-top:24px}.activity-tables h3{margin:22px 0 2px}.table-note{color:#667087;font-size:13px;margin:0 0 8px}.table-wrap{overflow-x:auto;border:1px solid #dfe4ef;border-radius:10px}table{width:100%;border-collapse:collapse;background:white;font-size:13px}th,td{padding:9px 10px;text-align:left;vertical-align:top;border-bottom:1px solid #e7eaf1}th{background:#edf1fb;color:#39445c;white-space:nowrap}tbody tr:last-child td{border-bottom:0}td time{white-space:nowrap}.filters button,.cta{padding:8px 12px;margin:3px;border:1px solid #bcc6dc;background:white;border-radius:20px;text-decoration:none}.hidden{display:none!important}.date-hidden{display:none!important}.seg.ibr{background:#12946a}.seg.nonibr{background:#d9822b}.seg.nolink{background:#8b93a7}.badge.column{background:#edf1fb;color:#39445c}.split-row{display:flex;align-items:center;gap:12px;margin:8px 0;font-size:13px;color:#52596b;flex-wrap:wrap}.split-row .meter{max-width:260px}.status-hidden{display:none!important}.status-filter-group{margin-left:auto;display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}.status-chip{font:inherit;font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid #bcc6dc;background:white;cursor:pointer;white-space:nowrap}.status-chip:hover{background:#eef2fc}.status-chip.active{background:#315bd6;border-color:#315bd6;color:white}.text-hidden{display:none!important}.table-filter{font:inherit;font-size:13px;padding:7px 10px;margin:6px 0 4px;border-radius:7px;border:1px solid #bcc6dc;background:white;min-width:220px}.table-filter:focus{outline:2px solid #315bd6;outline-offset:1px}th.sortable{cursor:pointer;user-select:none}th.sortable:hover{background:#dde6f8}th.sortable[data-dir="asc"]::after{content:" ▲";font-size:10px}th.sortable[data-dir="desc"]::after{content:" ▼";font-size:10px}details.accordion>summary .glance{font-size:13px;color:#52596b;font-weight:400}details.accordion{margin-top:0}details.accordion>summary{padding:6px 0}details.accordion>summary h2{display:inline;margin:0;font-size:24px}details.accordion[open]>summary{margin-bottom:10px}section:has(>details.accordion){background:white;border:1px solid #dfe4ef;border-radius:14px;padding:14px 20px;margin:14px 0;box-shadow:0 3px 12px #26334d10}nav .range{display:inline-flex;align-items:center;gap:8px;color:#c6cede;font-size:12px;flex-wrap:wrap}nav .range label{display:inline-flex;align-items:center;gap:5px}nav .range input[type=date]{margin-left:0;min-width:0;padding:6px;border-radius:7px;border:0;font-size:12px}#date-note{color:#ffd98a}details{margin-top:10px}summary{cursor:pointer;font-weight:600}.gap{border-left:5px solid #d89516}.attention{border-left:5px solid #cf7b20}.empty{color:#667087;font-style:italic}.breadcrumbs{margin-bottom:14px}.notable li{margin:5px 0}.completion-row{margin:6px 0 2px;display:flex;flex-wrap:wrap;gap:8px}.month-chip{display:flex;align-items:center;gap:7px;background:#f7f9fe;border:1px solid #e4e9f5;border-radius:9px;padding:6px 10px;white-space:nowrap}.month-chip strong{background:#edf1fb;padding:3px 7px;border-radius:6px}.month-chip .meter{width:84px;min-width:84px}
+CSS = '''body{margin:0;background:#f4f6fb;color:#172033;font:15px system-ui,sans-serif;line-height:1.5}a{color:#315bd6}nav{position:sticky;top:0;z-index:2;background:#172033;padding:10px 4vw;display:flex;gap:18px;align-items:center;justify-content:space-between}nav .brand{display:inline-flex;align-items:center;gap:11px;color:white;text-decoration:none;font-size:18px;font-weight:700;letter-spacing:.01em}nav .brand img{width:42px;height:42px;object-fit:contain}nav .generated{color:#c6cede;font-size:12px;text-align:right}nav .generated time{display:block;color:white;font-size:13px;font-weight:600}main{max-width:1200px;margin:auto;padding:35px 24px}h1{font-size:34px}.app-view{display:none}.app-view.active{display:block}.hero,.card,.person,.panel,.team-card{background:white;border:1px solid #dfe4ef;border-radius:14px;padding:20px;margin:14px 0;box-shadow:0 3px 12px #26334d10}.grid,.people-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.team-grid{display:block}.team-grid .team-card{margin:14px 0}.member-list{border-top:1px solid #e7eaf1;margin-top:16px;padding-top:12px}.member-list strong{display:block;margin-bottom:5px}.metric{background:#edf1fb;padding:16px;border-radius:10px}.metric strong{display:block;font-size:27px}.card header,.team-card header{display:flex;justify-content:space-between;gap:15px}.eyebrow{color:#65708a;text-transform:uppercase;font-size:12px;letter-spacing:.08em}.muted{color:#667087}.badge,.person-link{display:inline-block;padding:5px 8px;border-radius:20px;font-size:12px;margin:2px}.person-link{background:#edf1fb;text-decoration:none}.bad{background:#ffe3e1;color:#982d28}.warn{background:#fff0c4;color:#745100}.good{background:#dff6e8;color:#17633b}.tree,.tree ul{list-style:none;padding-left:20px}.issue-row{padding:6px;border-left:2px solid #dce3f5}.depth{display:none}.rollup{color:#425a9b}.health-list{padding-left:22px}.health-list li{margin:7px 0}.activity-tables{margin-top:24px}.activity-tables h3{margin:22px 0 2px}.table-note{color:#667087;font-size:13px;margin:0 0 8px}.table-wrap{overflow-x:auto;border:1px solid #dfe4ef;border-radius:10px}table{width:100%;border-collapse:collapse;background:white;font-size:13px}th,td{padding:9px 10px;text-align:left;vertical-align:top;border-bottom:1px solid #e7eaf1}th{background:#edf1fb;color:#39445c;white-space:nowrap}tbody tr:last-child td{border-bottom:0}td time{white-space:nowrap}.filters button,.cta{padding:8px 12px;margin:3px;border:1px solid #bcc6dc;background:white;border-radius:20px;text-decoration:none}.hidden{display:none!important}.date-hidden{display:none!important}.seg.ibr{background:#12946a}.seg.nonibr{background:#d9822b}.seg.nolink{background:#8b93a7}.badge.column{background:#edf1fb;color:#39445c}.split-row{display:flex;align-items:center;gap:12px;margin:8px 0;font-size:13px;color:#52596b;flex-wrap:wrap}.split-row .meter{max-width:260px}.status-hidden{display:none!important}.status-filter-group{margin-left:auto;display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap}.status-chip{font:inherit;font-size:12px;padding:4px 10px;border-radius:20px;border:1px solid #bcc6dc;background:white;cursor:pointer;white-space:nowrap}.status-chip:hover{background:#eef2fc}.status-chip.active{background:#315bd6;border-color:#315bd6;color:white}.text-hidden{display:none!important}.table-filter{font:inherit;font-size:13px;padding:7px 10px;margin:6px 0 4px;border-radius:7px;border:1px solid #bcc6dc;background:white;min-width:220px}.table-filter:focus{outline:2px solid #315bd6;outline-offset:1px}th.sortable{cursor:pointer;user-select:none}th.sortable:hover{background:#dde6f8}th.sortable[data-dir="asc"]::after{content:" ▲";font-size:10px}th.sortable[data-dir="desc"]::after{content:" ▼";font-size:10px}details.accordion>summary .glance{font-size:13px;color:#52596b;font-weight:400}details.accordion{margin-top:0}details.accordion>summary{padding:6px 0}details.accordion>summary h2{display:inline;margin:0;font-size:24px}details.accordion[open]>summary{margin-bottom:10px}section:has(>details.accordion){background:white;border:1px solid #dfe4ef;border-radius:14px;padding:14px 20px;margin:14px 0;box-shadow:0 3px 12px #26334d10}.date-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0;color:#667087;font-size:12px}.date-controls label{display:inline-flex;align-items:center;gap:5px}.date-controls input[type=date]{font:inherit;padding:6px 8px;border-radius:7px;border:1px solid #bcc6dc;background:white}.date-controls .date-note{color:#745100}details{margin-top:10px}summary{cursor:pointer;font-weight:600}.gap{border-left:5px solid #d89516}.attention{border-left:5px solid #cf7b20}.empty{color:#667087;font-style:italic}.breadcrumbs{margin-bottom:14px}.notable li{margin:5px 0}.completion-row{margin:6px 0 2px;display:flex;flex-wrap:wrap;gap:8px}.month-chip{display:flex;align-items:center;gap:7px;background:#f7f9fe;border:1px solid #e4e9f5;border-radius:9px;padding:6px 10px;white-space:nowrap}.month-chip strong{background:#edf1fb;padding:3px 7px;border-radius:6px}.month-chip .meter{width:84px;min-width:84px}
 /* Child-state palette: validated for CVD separation and >=3:1 on the white
    table surface (done #12946a vs in-progress #2a78d6). "Not started" is the
    recessive track tone, never a warning color. */
@@ -1141,22 +1536,21 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .breakdown .month-row th{background:#e8eefb;color:#26355c;font-size:13px;padding:8px 10px}.breakdown .parent-row td{border-top:1px solid #e7eaf1}.child-row td{background:#fafbfe;font-size:12px;padding:6px 10px}.child-row .child-key{padding-left:26px}.collapsed{display:none}
 /* Keys, badges and controls never wrap; the title column absorbs the slack. */
 .breakdown td:first-child,.breakdown th:first-child{white-space:nowrap}.breakdown td:nth-child(2){width:99%}.badge,.toggle{white-space:nowrap}
-.toggle{font:inherit;font-size:12px;color:#315bd6;background:#eef2fc;border:1px solid #d3ddf4;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle:hover{background:#e2e9f9}.toggle[aria-expanded="true"]{background:#dbe4f8}@media(max-width:650px){nav input{width:100%;margin:0}.card header,.team-card header{display:block}.team-card{padding:15px}th,td{min-width:110px}th:last-child,td:last-child{min-width:220px}}'''
-JS = '''const q=document.querySelector('#q');function activeView(){return document.querySelector('.app-view.active')||document.querySelector('[data-route="/"]')}function apply(){const v=q.value.toLowerCase(),view=activeView();if(v)view.querySelectorAll('details.accordion').forEach(d=>d.open=true);view.querySelectorAll('.searchable').forEach(e=>e.classList.toggle('hidden',!e.innerText.toLowerCase().includes(v)))}if(q)q.addEventListener('input',apply);
-function route(){const path=location.hash.startsWith('#/')?location.hash.slice(1):'/';const views=[...document.querySelectorAll('.app-view')];const view=views.find(v=>v.dataset.route===path)||views.find(v=>v.dataset.route==='/');views.forEach(v=>v.classList.toggle('active',v===view));document.title=(view.dataset.title?view.dataset.title+' — ':'')+'Weekly Engineering Status';if(q){q.value='';apply()}window.scrollTo(0,0)}
+.toggle{font:inherit;font-size:12px;color:#315bd6;background:#eef2fc;border:1px solid #d3ddf4;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle:hover{background:#e2e9f9}.toggle[aria-expanded="true"]{background:#dbe4f8}.cycle-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:10px 0}.cycle-summary .metric{padding:12px}.cycle-summary .metric strong{font-size:22px}.cycle-group{margin:22px 0}.cycle-child td{background:#fafbfe;font-size:12px}.top-status{background:#e7ddff;color:#57359a}.cycle-excluded{display:none}.cycle-excluded.focused{display:table-row-group}.rag-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:5px;font-size:12px;font-weight:700;white-space:nowrap}.rag-red{background:#ffe3e1;color:#982d28;border:1px solid #e9aaa5}.rag-amber{background:#fff0c4;color:#745100;border:1px solid #e5c66c}.rag-green{background:#dff6e8;color:#17633b;border:1px solid #96d5af}.rag-summary ul{columns:2;padding-left:22px}.rag-summary li{break-inside:avoid;margin:6px 0}.rag-instance:target,.rag-instance.focused{outline:3px solid #315bd6;outline-offset:-2px;scroll-margin-top:90px}.landing-header{margin:20px 0 28px}.landing-header h1{margin:5px 0}.landing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.landing-section{position:relative;background:white;border:1px solid #dfe4ef;border-radius:14px;padding:24px;box-shadow:0 3px 12px #26334d10;min-height:190px}.landing-section h2{font-size:24px;margin:4px 0}.landing-section p{color:#667087;margin:0 0 18px}.landing-number{color:#8792aa;font-size:12px;font-weight:700;letter-spacing:.1em}.directory-links{display:flex;flex-wrap:wrap;gap:8px}.directory-link,.finder-link{display:inline-flex;align-items:center;padding:8px 11px;border-radius:8px;background:#edf1fb;text-decoration:none;font-weight:600}.directory-link:hover,.finder-link:hover{background:#dfe7fa}.finder-link{margin-top:8px}.finder-stub{max-width:720px;margin:60px auto;text-align:center;padding:50px}.finder-filters{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:14px 0}.finder-filters label{display:grid;gap:4px;color:#667087;font-size:12px}.finder-filters select{font:inherit;min-width:170px;padding:7px 9px;border:1px solid #bcc6dc;border-radius:7px;background:white}.finder-count{color:#52596b;font-size:13px;margin-left:auto}.facet-hidden{display:none!important}.column-manager,.threshold-manager{background:#f8faff;border:1px solid #dfe4ef;border-radius:10px;padding:10px 12px;margin:12px 0}.column-manager>summary,.threshold-manager>summary{color:#315bd6}.column-manager-visible{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.column-item{display:inline-flex;align-items:center;gap:3px;background:white;border:1px solid #dfe4ef;border-radius:8px;padding:4px 5px 4px 9px}.column-item strong{font-size:12px}.column-item button{border:0;background:#edf1fb;color:#315bd6;border-radius:5px;cursor:pointer;padding:2px 6px}.column-item button:disabled{color:#9ba4b7;cursor:not-allowed}.column-add{display:flex;align-items:end;gap:7px}.column-add label{display:grid;gap:3px;color:#667087;font-size:12px}.column-add select{font:inherit;padding:6px 8px;border:1px solid #bcc6dc;border-radius:7px;background:white}.column-hidden{display:none!important}.threshold-grid{display:grid;grid-template-columns:minmax(180px,1fr) 130px 130px;gap:7px;align-items:center;max-width:520px;margin:10px 0}.threshold-grid input{font:inherit;padding:6px 8px;border:1px solid #bcc6dc;border-radius:7px;min-width:0}.threshold-actions{display:flex;align-items:center;gap:10px}.cell-red{background:#ffe3e1!important;color:#982d28;font-weight:700}.cell-amber{background:#fff0c4!important;color:#745100;font-weight:700}.cell-red::before{content:"● ";color:#b42318}.cell-amber::before{content:"▲ ";color:#9a6700}.quality-missing{background:repeating-linear-gradient(135deg,#f2f4f8,#f2f4f8 5px,#e5e9f1 5px,#e5e9f1 10px)!important;color:#52596b}.quality-missing::before{content:"⚠ ";color:#596579}.attention-hidden{display:none!important}@media(max-width:650px){nav{padding:8px 16px}.generated{max-width:150px}.card header,.team-card header{display:block}.team-card{padding:15px}.landing-grid{grid-template-columns:1fr}.landing-section{min-height:0}th,td{min-width:110px}th:last-child,td:last-child{min-width:220px}.rag-summary ul{columns:1}.finder-count{width:100%;margin-left:0}.threshold-grid{grid-template-columns:minmax(130px,1fr) 90px 90px}}'''
+JS = '''function route(){const raw=location.hash.startsWith('#/')?location.hash.slice(1):'/';const [path,query='']=raw.split('?');const params=new URLSearchParams(query);const views=[...document.querySelectorAll('.app-view')];const view=views.find(v=>v.dataset.route===path)||views.find(v=>v.dataset.route==='/');views.forEach(v=>v.classList.toggle('active',v===view));document.title=(view.dataset.title?view.dataset.title+' — ':'')+'Engineering Intelligence';document.querySelectorAll('.rag-instance.focused').forEach(e=>e.classList.remove('focused'));const focus=params.get('focus');if(focus){const target=document.getElementById(focus);if(target){const details=target.closest('details');if(details)details.open=true;target.classList.add('focused');requestAnimationFrame(()=>target.scrollIntoView({block:'center'}));return}}window.scrollTo(0,0)}
 window.addEventListener('hashchange',route);route();
 document.querySelectorAll('.status-filter-group').forEach(group=>{const scope=group.closest('details')||document;
 group.querySelectorAll('.status-chip').forEach(chip=>chip.addEventListener('click',()=>{
 chip.classList.toggle('active');chip.setAttribute('aria-pressed',chip.classList.contains('active'));
 const active=new Set([...group.querySelectorAll('.status-chip.active')].map(c=>c.dataset.status));
 scope.querySelectorAll('[data-issue-status]').forEach(r=>r.classList.toggle('status-hidden',active.size>0&&!active.has(r.dataset.issueStatus)));}));});
-document.querySelectorAll('.table-wrap').forEach(w=>{const t=w.querySelector('table');if(!t||!t.tHead||!t.tBodies.length||t.querySelector('.child-row,.month-row'))return;
+document.querySelectorAll('.table-wrap').forEach(w=>{const t=w.querySelector('table');if(!t||!t.tHead||!t.tBodies.length||t.classList.contains('cycle-table')||t.classList.contains('pr-metric-table')||t.querySelector('.child-row,.month-row'))return;
 const inp=document.createElement('input');inp.type='search';inp.placeholder='Filter rows…';inp.className='table-filter';inp.setAttribute('aria-label','Filter table rows');
 w.parentNode.insertBefore(inp,w);
 inp.addEventListener('input',()=>{const v=inp.value.toLowerCase();
 [...t.tBodies[0].rows].forEach(r=>{if(r.cells.length<=1)return;r.classList.toggle('text-hidden',Boolean(v)&&!r.innerText.toLowerCase().includes(v));});});});
-document.querySelectorAll('table').forEach(t=>{if(!t.tHead||!t.tBodies.length||t.querySelector('.child-row,.month-row'))return;const body=t.tBodies[0];
-[...t.tHead.rows[0].cells].forEach((th,i)=>{th.classList.add('sortable');th.addEventListener('click',()=>{
+document.querySelectorAll('table').forEach(t=>{if(!t.tHead||!t.tBodies.length||t.classList.contains('cycle-table')||t.classList.contains('pr-metric-table')||t.querySelector('.child-row,.month-row'))return;const body=t.tBodies[0];
+[...t.tHead.rows[0].cells].forEach(th=>{th.classList.add('sortable');th.addEventListener('click',()=>{const i=th.cellIndex;
 const dir=th.dataset.dir==='asc'?'desc':'asc';
 [...t.tHead.rows[0].cells].forEach(c=>{c.removeAttribute('data-dir');c.removeAttribute('aria-sort')});
 th.dataset.dir=dir;th.setAttribute('aria-sort',dir==='asc'?'ascending':'descending');
@@ -1166,23 +1560,41 @@ data.sort((a,b)=>{const x=val(a),y=val(b);const nx=parseFloat(x.replace(/[%,]/g,
 const c=(x!==''&&y!==''&&!isNaN(nx)&&!isNaN(ny))?nx-ny:x.localeCompare(y,undefined,{numeric:true,sensitivity:'base'});
 return dir==='asc'?c:-c});
 data.concat(rest).forEach(r=>body.appendChild(r));});});});document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{const f=b.dataset.filter,scope=b.closest('.app-view')||document;scope.querySelectorAll('[data-status]').forEach(e=>e.classList.toggle('hidden',f!=='all'&&e.dataset.status!==f));});
-const dateFrom=document.querySelector('#date-from'),dateTo=document.querySelector('#date-to'),dateClear=document.querySelector('#date-clear'),dateNote=document.querySelector('#date-note');
-function dateApply(){if(!dateFrom)return;const from=dateFrom.value,to=dateTo.value,active=Boolean(from||to);let undated=0;document.querySelectorAll('[data-date]').forEach(e=>{const d=e.dataset.date;let hide=false;if(active){if(!d){hide=true;undated++;}else{hide=(from&&d<from)||(to&&d>to);}}e.classList.toggle('date-hidden',hide);});if(dateNote)dateNote.textContent=active?(undated?undated+' undated records hidden by the time filter':'Time filter active'):'';}
-if(dateFrom){dateFrom.addEventListener('change',dateApply);dateTo.addEventListener('change',dateApply);dateClear.addEventListener('click',()=>{dateFrom.value='';dateTo.value='';dateApply();});}
+function dateControls(){const box=document.createElement('div');box.className='date-controls';box.innerHTML='<strong>Table dates</strong><label>From <input type="date" data-date-from></label><label>To <input type="date" data-date-to></label><button class="toggle" type="button" data-date-clear>Clear</button><span class="date-note"></span>';return box;}
+function bindDateScope(scope,targets,dateValue,after){const controls=dateControls(),anchor=scope.querySelector('.table-wrap')||scope;anchor.parentNode.insertBefore(controls,anchor);const from=controls.querySelector('[data-date-from]'),to=controls.querySelector('[data-date-to]'),note=controls.querySelector('.date-note');function applyDates(){const first=from.value,last=to.value,active=Boolean(first||last);let undated=0;const included=[];targets().forEach(row=>{const d=dateValue(row);let hide=false;if(active){if(!d){hide=true;undated++;}else hide=Boolean((first&&d<first)||(last&&d>last));}row.classList.toggle('date-hidden',hide);if(!hide)included.push(row);});if(after)after(included,targets());note.textContent=active?(undated?undated+' undated rows hidden':'Filter active'):'';}from.addEventListener('change',applyDates);to.addEventListener('change',applyDates);controls.querySelector('[data-date-clear]').addEventListener('click',()=>{from.value='';to.value='';applyDates();});applyDates();}
+document.querySelectorAll('.cycle-group').forEach(group=>bindDateScope(group,()=>[...group.querySelectorAll('.cycle-contribution')],row=>row.dataset.cycleEnded,(included,all)=>{const ranked=[...included].sort((a,b)=>Number(b.dataset.cycleDays)-Number(a.dataset.cycleDays));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.cycleDays),0),statuses={};included.forEach(row=>{const values=JSON.parse(row.dataset.statusDurations||'{}');Object.entries(values).forEach(([status,days])=>statuses[status]=(statuses[status]||0)+Number(days));});const top=Object.entries(statuses).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))[0];group.querySelector('.cycle-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.cycle-sample').textContent=String(included.length);group.querySelector('.cycle-top-status').textContent=top?top[0]+' ('+top[1].toFixed(2)+'d)':'—';}));
+document.querySelectorAll('.pr-metric-group').forEach(group=>bindDateScope(group,()=>[...group.querySelectorAll('.pr-metric-contribution')],row=>row.dataset.prMerged,(included,all)=>{const ranked=[...included].sort((a,b)=>Number(b.dataset.metricHours)-Number(a.dataset.metricHours));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.metricHours),0);group.querySelector('.pr-metric-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.pr-metric-sample').textContent=String(included.length);}));
+document.querySelectorAll('.table-wrap').forEach(w=>{if(w.closest('.cycle-group,.pr-metric-group'))return;const dated=[...w.querySelectorAll('[data-date]')];if(dated.length)bindDateScope(w,()=>dated,row=>row.dataset.date);});
+document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),rows=[...table.tBodies[0].rows].filter(r=>r.cells.length>1),controls=[...scope.querySelectorAll('[data-finder-field]')],attention=scope.querySelector('[data-finder-attention]'),count=scope.querySelector('.finder-count');function applyFacets(){rows.forEach(row=>{row.classList.toggle('facet-hidden',controls.some(control=>control.value&&row.dataset[control.dataset.finderField]!==control.value));const value=attention.value,level=row.dataset.attention||'none',hide=Boolean(value)&&!((value==='flagged'&&(level==='red'||level==='amber'))||level===value);row.classList.toggle('attention-hidden',hide);});const shown=rows.filter(row=>!row.classList.contains('facet-hidden')&&!row.classList.contains('attention-hidden')).length;count.textContent=shown+' of '+rows.length+' issues';}controls.forEach(control=>control.addEventListener('change',applyFacets));attention.addEventListener('change',applyFacets);scope.addEventListener('finder-attention-change',applyFacets);scope.querySelector('[data-finder-clear]').addEventListener('click',()=>{controls.forEach(control=>control.value='');attention.value='';applyFacets();});applyFacets();});
+document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),inputs=[...scope.querySelectorAll('[data-threshold-metric]')],note=scope.querySelector('[data-threshold-note]'),rows=[...table.tBodies[0].rows].filter(row=>row.cells.length>1);function threshold(metric,level){const input=inputs.find(item=>item.dataset.thresholdMetric===metric&&item.dataset.thresholdLevel===level);return input&&input.value!==''?Number(input.value):null;}function applyThresholds(){let invalid=false;const metrics=new Set(inputs.map(input=>input.dataset.thresholdMetric));metrics.forEach(metric=>{const amber=threshold(metric,'amber'),red=threshold(metric,'red');if(amber!==null&&red!==null&&red<amber)invalid=true;});table.querySelectorAll('.metric-cell').forEach(cell=>{cell.classList.remove('cell-red','cell-amber');const value=cell.dataset.value;if(value===undefined)return;const amber=threshold(cell.dataset.metric,'amber'),red=threshold(cell.dataset.metric,'red'),number=Number(value);if(red!==null&&number>=red)cell.classList.add('cell-red');else if(amber!==null&&number>=amber)cell.classList.add('cell-amber');});rows.forEach(row=>{row.dataset.attention=row.querySelector('.cell-red')?'red':row.querySelector('.cell-amber')?'amber':row.querySelector('.quality-missing')?'missing':'none';});note.textContent=invalid?'A Red threshold is below Amber; Red still takes precedence.':'';scope.dispatchEvent(new CustomEvent('finder-attention-change'));}inputs.forEach(input=>input.addEventListener('input',applyThresholds));scope.querySelector('[data-threshold-clear]').addEventListener('click',()=>{inputs.forEach(input=>input.value='');applyThresholds();});applyThresholds();});
+document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),manager=scope.querySelector('.column-manager'),headerRow=table.tHead.rows[0],allRows=[headerRow,...table.tBodies[0].rows];[...headerRow.cells].forEach((th,index)=>allRows.slice(1).forEach(row=>row.cells[index].dataset.columnKey=th.dataset.columnKey));function cellsFor(key){return allRows.map(row=>[...row.cells].find(cell=>cell.dataset.columnKey===key));}function move(key,direction){const visible=[...headerRow.cells].filter(cell=>!cell.classList.contains('column-hidden')),source=visible.find(cell=>cell.dataset.columnKey===key),index=visible.indexOf(source),target=visible[index+direction];if(!source||!target)return;const sourceCells=cellsFor(key),targetCells=cellsFor(target.dataset.columnKey);sourceCells.forEach((cell,rowIndex)=>{const targetCell=targetCells[rowIndex];targetCell.parentNode.insertBefore(cell,direction<0?targetCell:targetCell.nextSibling);});render();}function setHidden(key,hidden){cellsFor(key).forEach(cell=>cell.classList.toggle('column-hidden',hidden));render();}function add(key){const cells=cellsFor(key);cells.forEach(cell=>{cell.classList.remove('column-hidden');cell.parentNode.appendChild(cell);});render();}function render(){const visible=[...headerRow.cells].filter(cell=>!cell.classList.contains('column-hidden')),hidden=[...headerRow.cells].filter(cell=>cell.classList.contains('column-hidden')),list=manager.querySelector('[data-column-list]'),select=manager.querySelector('[data-column-add-select]');list.innerHTML=visible.map((cell,index)=>'<span class="column-item"><strong>'+cell.textContent.replace(/[▲▼]/g,'').trim()+'</strong><button type="button" data-column-left="'+cell.dataset.columnKey+'" aria-label="Move '+cell.textContent.trim()+' left" '+(index===0?'disabled':'')+'>←</button><button type="button" data-column-right="'+cell.dataset.columnKey+'" aria-label="Move '+cell.textContent.trim()+' right" '+(index===visible.length-1?'disabled':'')+'>→</button><button type="button" data-column-remove="'+cell.dataset.columnKey+'" aria-label="Remove '+cell.textContent.trim()+'" '+(visible.length===1?'disabled':'')+'>×</button></span>').join('');select.innerHTML=hidden.length?hidden.map(cell=>'<option value="'+cell.dataset.columnKey+'">'+cell.textContent.replace(/[▲▼]/g,'').trim()+'</option>').join(''):'<option value="">No hidden columns</option>';select.disabled=!hidden.length;manager.querySelector('[data-column-add]').disabled=!hidden.length;list.querySelectorAll('[data-column-left]').forEach(button=>button.onclick=()=>move(button.dataset.columnLeft,-1));list.querySelectorAll('[data-column-right]').forEach(button=>button.onclick=()=>move(button.dataset.columnRight,1));list.querySelectorAll('[data-column-remove]').forEach(button=>button.onclick=()=>setHidden(button.dataset.columnRemove,true));}manager.querySelector('[data-column-add]').onclick=()=>{const select=manager.querySelector('[data-column-add-select]');if(select.value)add(select.value);};render();});
+document.querySelectorAll('.github-finder-table').forEach(table=>{const scope=table.closest('.app-view'),raw=JSON.parse(scope.querySelector('#github-finder-data').textContent),rows=raw.map(r=>({type:r[0],repository:r[1],identifier:r[2],title:r[3],url:r[4],state:r[5],draft:r[6],author:r[7],created:r[8],updated:r[9],merged:r[10],authored:r[11],committed:r[12],head:r[13],base:r[14],commits:r[15],reviews:r[16],reviewers:r[17],prs:r[18],jira:r[19],jiraUrls:r[20],authorTeams:r[21],reviewerTeams:r[22],firstReviewed:r[23],pickupHours:r[24],reviewHours:r[25]}));
+const columns=[['type','Record'],['repository','Repository'],['identifier','ID'],['title','Title'],['state','State'],['author','Author'],['date','Date'],['pickupHours','PR pickup time'],['reviewHours','PR review time'],['head','Head'],['base','Base'],['commits','Commits'],['reviews','Reviews'],['reviewers','Reviewers'],['prs','Pull requests'],['jira','Jira']];let visible=columns.map(c=>c[0]),page=0,sortKey='date',sortDir='desc',filtered=[];const size=100,head=table.tHead.rows[0],body=table.tBodies[0],manager=scope.querySelector('.github-column-manager'),filters=Object.fromEntries([...scope.querySelectorAll('[data-gh-filter]')].map(x=>[x.dataset.ghFilter,x]));
+const e=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),date=r=>r.merged||r.updated||r.committed||r.authored||r.created||'',hours=v=>v===null||v===undefined?'—':v<24?Number(v).toFixed(1)+' h':(Number(v)/24).toFixed(1)+' d',label=k=>columns.find(c=>c[0]===k)[1],cell=(r,k)=>{if(k==='identifier'||k==='title')return '<a href="'+e(r.url)+'" target="_blank" rel="noreferrer">'+e(r[k])+'</a>';if(k==='type')return r.type==='pull_request'?'Pull request':'Commit';if(k==='state')return e((r.draft?'draft · ':'')+(r.state||'—'));if(k==='date')return date(r)?'<time datetime="'+e(date(r))+'">'+e(date(r).slice(0,10))+'</time>':'—';if(k==='pickupHours'||k==='reviewHours')return e(hours(r[k]));if(k==='reviewers'||k==='prs')return e((r[k]||[]).join(', ')||'—');if(k==='jira')return r.jira.length?r.jira.map(j=>'<a href="'+e(r.jiraUrls[j])+'" target="_blank" rel="noreferrer">'+e(j)+'</a>').join(', '):'—';return e(r[k]??'—')};
+function managerView(){const list=manager.querySelector('[data-column-list]'),select=manager.querySelector('[data-column-add-select]'),hidden=columns.map(c=>c[0]).filter(k=>!visible.includes(k));list.innerHTML=visible.map((k,i)=>'<span class="column-item"><strong>'+e(label(k))+'</strong><button type="button" data-left="'+k+'" '+(i===0?'disabled':'')+'>←</button><button type="button" data-right="'+k+'" '+(i===visible.length-1?'disabled':'')+'>→</button><button type="button" data-remove="'+k+'" '+(visible.length===1?'disabled':'')+'>×</button></span>').join('');select.innerHTML=hidden.length?hidden.map(k=>'<option value="'+k+'">'+e(label(k))+'</option>').join(''):'<option value="">No hidden columns</option>';select.disabled=!hidden.length;manager.querySelector('[data-column-add]').disabled=!hidden.length;list.querySelectorAll('[data-left],[data-right]').forEach(b=>b.onclick=()=>{const k=b.dataset.left||b.dataset.right,i=visible.indexOf(k),d=b.dataset.left?-1:1;[visible[i],visible[i+d]]=[visible[i+d],visible[i]];draw()});list.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{visible=visible.filter(k=>k!==b.dataset.remove);draw()})}
+function draw(){head.innerHTML=visible.map(k=>'<th data-key="'+k+'" class="sortable"'+(k===sortKey?' data-dir="'+sortDir+'"':'')+'>'+e(label(k))+'</th>').join('');head.querySelectorAll('th').forEach(th=>th.onclick=()=>{sortDir=sortKey===th.dataset.key&&sortDir==='asc'?'desc':'asc';sortKey=th.dataset.key;apply()});const start=page*size;body.innerHTML=filtered.slice(start,start+size).map(r=>'<tr>'+visible.map(k=>'<td>'+cell(r,k)+'</td>').join('')+'</tr>').join('')||'<tr><td colspan="'+visible.length+'" class="empty">No GitHub records match these filters.</td></tr>';scope.querySelector('[data-gh-count]').textContent=filtered.length.toLocaleString()+' of '+rows.length.toLocaleString()+' records';scope.querySelector('[data-gh-page]').textContent='Page '+(filtered.length?page+1:0)+' of '+Math.ceil(filtered.length/size);scope.querySelector('[data-gh-prev]').disabled=page===0;scope.querySelector('[data-gh-next]').disabled=start+size>=filtered.length;managerView()}
+function apply(){const text=filters.text.value.toLowerCase(),from=filters.from.value,to=filters.to.value;filtered=rows.filter(r=>(!filters.type.value||r.type===filters.type.value)&&(!filters.repository.value||r.repository===filters.repository.value)&&(!filters.state.value||r.state===filters.state.value)&&(!filters.author.value||r.author===filters.author.value)&&(!filters.authorTeam.value||r.authorTeams.includes(filters.authorTeam.value))&&(!filters.reviewer.value||r.reviewers.includes(filters.reviewer.value))&&(!filters.reviewerTeam.value||r.reviewerTeams.includes(filters.reviewerTeam.value))&&(!filters.jira.value||(filters.jira.value==='linked'?r.jira.length:!r.jira.length))&&(!from||date(r).slice(0,10)>=from)&&(!to||date(r).slice(0,10)<=to)&&(!text||[r.repository,r.identifier,r.title,r.author,r.state,...r.reviewers,...r.prs,...r.jira].join(' ').toLowerCase().includes(text)));filtered.sort((a,b)=>{const av=sortKey==='date'?date(a):a[sortKey],bv=sortKey==='date'?date(b):b[sortKey],c=(typeof av==='number'&&typeof bv==='number')?av-bv:String(av??'').localeCompare(String(bv??''),undefined,{numeric:true,sensitivity:'base'});return sortDir==='asc'?c:-c});page=0;draw()}
+Object.values(filters).forEach(x=>x.addEventListener(x.tagName==='INPUT'?'input':'change',apply));scope.querySelector('[data-gh-clear]').onclick=()=>{Object.values(filters).forEach(x=>x.value='');apply()};scope.querySelector('[data-gh-prev]').onclick=()=>{page--;draw()};scope.querySelector('[data-gh-next]').onclick=()=>{page++;draw()};manager.querySelector('[data-column-add]').onclick=()=>{const s=manager.querySelector('[data-column-add-select]');if(s.value){visible.push(s.value);draw()}};apply()});
 function setChildren(key,open){document.querySelectorAll('.child-row[data-parent="'+CSS.escape(key)+'"]').forEach(r=>r.classList.toggle('collapsed',!open));document.querySelectorAll('.toggle[data-children="'+CSS.escape(key)+'"]').forEach(b=>b.setAttribute('aria-expanded',String(open)));}
 document.querySelectorAll('.toggle[data-children]').forEach(b=>b.onclick=()=>setChildren(b.dataset.children,b.getAttribute('aria-expanded')!=='true'));
 document.querySelectorAll('.expand-all').forEach(b=>b.onclick=()=>{const open=b.dataset.open!=='true';b.dataset.open=String(open);b.textContent=open?'Collapse all children':'Expand all children';b.closest('section').querySelectorAll('.toggle[data-children]').forEach(t=>setChildren(t.dataset.children,open));});'''
 
 
-def page(title: str, body: str) -> str:
-    nav_links = '<a href="#/">Engineering Status</a><a href="#/">Overview</a>'
-    range_controls = (
-        '<span class="range"><label>From <input type="date" id="date-from"></label>'
-        '<label>To <input type="date" id="date-to"></label>'
-        '<button id="date-clear" class="toggle" type="button">Clear</button>'
-        '<span id="date-note" class="muted"></span></span>'
+def logo_data_uri() -> str:
+    encoded = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def page(title: str, body: str, generated_at: datetime) -> str:
+    generated_iso = generated_at.isoformat().replace("+00:00", "Z")
+    generated_label = generated_at.strftime("%Y-%m-%d %H:%M UTC")
+    nav = (
+        f'<a class="brand" href="#/"><img src="{logo_data_uri()}" alt="">'
+        '<span>Engineering Intelligence</span></a>'
+        '<span class="generated">Report generated'
+        f'<time datetime="{generated_iso}">{generated_label}</time></span>'
     )
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{CSS}</style></head><body><nav>{nav_links}<input id="q" placeholder="Search issues, engineers, teams…">{range_controls}</nav><main id="top">{body}</main><script>{JS}</script></body></html>'''
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{CSS}</style></head><body><nav>{nav}</nav><main id="top">{body}</main><script>{JS}</script></body></html>'''
 
 
 def write_page(path: Path, content: str) -> None:
@@ -1198,10 +1610,26 @@ def main() -> None:
     parser.add_argument("--source-config", type=Path, required=True)
     parser.add_argument("--teams-config", type=Path, required=True)
     parser.add_argument(
+        "--report-cache-dir", type=Path,
+        help="Snapshot-bound derived-view cache (defaults under DATA_DIR/report-cache).",
+    )
+    parser.add_argument(
+        "--rebuild-report-cache", action="store_true",
+        help="Recompute and atomically replace every derived report view.",
+    )
+    parser.add_argument(
         "--summaries-json", type=Path,
         help="Agent-authored natural-language summaries grounded in the pinned evidence.",
     )
     args = parser.parse_args()
+    snapshot_key = hashlib.sha256(args.snapshot.encode()).hexdigest()[:20]
+    cache_dir = args.report_cache_dir or (
+        args.data_dir / "report-cache" / REPORT_CACHE_VERSION / snapshot_key
+    )
+    configure_query_cache(
+        cache_dir, args.source_config, args.teams_config,
+        rebuild=args.rebuild_report_cache,
+    )
     authored_summaries = (
         json.loads(args.summaries_json.read_text(encoding="utf-8"))
         if args.summaries_json else {}
@@ -1215,6 +1643,10 @@ def main() -> None:
         "dashboard", "get", args.snapshot,
         "--source-config", str(args.source_config),
         "--teams-config", str(args.teams_config),
+    ], args.data_dir)
+    github_finder = run_json([
+        "github", "finder", "--snapshot", args.snapshot,
+        "--source-config", str(args.source_config),
     ], args.data_dir)
     team_rows = {row["team_name"]: row for row in dashboard["teams"]}
     report_teams = [name for name in team_rows if name.casefold() != "no team"]
@@ -1232,6 +1664,21 @@ def main() -> None:
         ], args.data_dir)
         for name in report_teams
     }
+    team_build_cycle = {
+        name: run_json([
+            "metrics", "build-cycle", "--snapshot", args.snapshot, "--team", name,
+            "--teams-config", str(args.teams_config),
+        ], args.data_dir)
+        for name in report_teams
+    }
+    team_github_pr_metrics = {
+        name: run_json([
+            "metrics", "github-pr", "--snapshot", args.snapshot, "--team", name,
+            "--source-config", str(args.source_config),
+            "--teams-config", str(args.teams_config),
+        ], args.data_dir)
+        for name in report_teams
+    }
     team_details = {
         name: run_json([
             "team", "get", name, "--snapshot", args.snapshot,
@@ -1241,16 +1688,31 @@ def main() -> None:
         for name in report_teams
     }
     team_work = {}
+    issue_finder_work = {}
     for name in report_teams:
         if name not in team_rows:
             continue
-        try:
-            team_work[name] = run_json(
-                ["team", "work", name, "--snapshot", args.snapshot,
-                 "--teams-config", str(args.teams_config)], args.data_dir
-            )
-        except subprocess.CalledProcessError:
-            team_work[name] = None
+        team_work[name] = run_json(
+            ["team", "work", name, "--snapshot", args.snapshot,
+             "--teams-config", str(args.teams_config)], args.data_dir
+        )
+        issue_finder_work[name] = run_json(
+            ["team", "work", name, "--snapshot", args.snapshot,
+             "--teams-config", str(args.teams_config), "--all-jira"], args.data_dir
+        )
+    issue_finder_by_key = {}
+    for name in report_teams:
+        work = issue_finder_work.get(name) or {}
+        for issue in work.get("jira_issues", []):
+            key = issue.get("jira_key")
+            if not key or key in issue_finder_by_key:
+                continue
+            issue_finder_by_key[key] = {**issue, "team_name": name}
+    issue_finder_issues = sorted(
+        issue_finder_by_key.values(),
+        key=lambda item: (item.get("source_updated_at") or "", item["jira_key"]),
+        reverse=True,
+    )
     items = {
         item["jira_key"]: item
         for row in selected_rows
@@ -1266,14 +1728,11 @@ def main() -> None:
     ]
     for row in directory_rows:
         name = row["person_id"]
-        try:
-            people.append(run_json([
-                "individual", "get", name, "--snapshot", args.snapshot,
-                "--teams-config", str(args.teams_config),
-                "--source-config", str(args.source_config),
-            ], args.data_dir))
-        except subprocess.CalledProcessError:
-            gaps.append(f"Individual context unavailable for {name}: command failed.")
+        people.append(run_json([
+            "individual", "get", name, "--snapshot", args.snapshot,
+            "--teams-config", str(args.teams_config),
+            "--source-config", str(args.source_config),
+        ], args.data_dir))
     memberships = {
         person["jira_account_id"]: {
             team for team, names in team_members.items() if person["display_name"] in names
@@ -1296,15 +1755,9 @@ def main() -> None:
         if key in features:
             hierarchies[key] = features[key]["hierarchy"]
             continue
-        try:
-            hierarchies[key] = run_json(
-                ["feature", "get", key, "--snapshot", args.snapshot], args.data_dir
-            )["hierarchy"]
-        except subprocess.CalledProcessError:
-            gaps.append(
-                f"Child hierarchy unavailable for dated item {key}: "
-                "it contributes completion from its board column alone."
-            )
+        hierarchies[key] = run_json(
+            ["feature", "get", key, "--snapshot", args.snapshot], args.data_dir
+        )["hierarchy"]
     team_completion = {
         name: completion_by_target_date(detail, hierarchies)
         for name, detail in team_details.items()
@@ -1337,7 +1790,7 @@ def main() -> None:
         for completion in team_completion.values()
     )
 
-    team_cards = []
+    team_quick_links = []
     team_detail_sections = []
     for name in report_teams:
         row = team_rows.get(name)
@@ -1346,11 +1799,8 @@ def main() -> None:
         completion = team_completion[name]
         team_items = [*row.get("in_progress", []), *row.get("ready_for_build", [])]
         feature_rows = [(features[item["jira_key"]], item) for item in team_items]
-        content_summary, health_items, notable = team_summaries(
+        _content_summary, health_items, notable = team_summaries(
             name, row, feature_rows, memberships, snapshot_at, team_metrics[name]
-        )
-        content_summary = authored_summaries.get("teams", {}).get(name, {}).get(
-            "content_summary", content_summary
         )
         issue_urls = {
             node["jira_key"]: node["url"]
@@ -1367,20 +1817,13 @@ def main() -> None:
         health_html = '<ul class="health-list">' + ''.join(
             f'<li>{linked_jira_text(item, issue_urls)}</li>' for item in health_items
         ) + '</ul>'
-        content_html = linked_jira_text(content_summary, issue_urls)
         team_people = [person for person in people if person["display_name"] in team_members[name]]
         activity_html = team_activity_tables(team_details[name], team_people)
         notable_html = "".join(f'<li>{esc(item)}</li>' for item in notable) or '<li>No notable hygiene findings.</li>'
         team_href = f"#/teams/{slug(name)}"
-        overview_members = "".join(
-            internal_link(
-                f"#/people/{slug(person['display_name'])}",
-                person.get("preferred_name") or person["display_name"],
-                css_class="person-link",
-            )
-            for person in team_people
-        ) or '<span class="muted">No configured engineers</span>'
-        team_cards.append(f'''<article class="team-card searchable"><header><div><span class="eyebrow">Team</span><h2>{internal_link(team_href, name)}</h2></div></header><p>{content_html}</p><div class="member-list"><strong>People</strong>{overview_members}</div></article>''')
+        team_quick_links.append(
+            internal_link(team_href, name, css_class="directory-link")
+        )
         detail_cards = "".join(
             feature_card(feature, item, memberships, snapshot_at)
             for feature, item in feature_rows
@@ -1393,8 +1836,17 @@ def main() -> None:
         ) or '<span class="muted">No configured engineers</span>'
         team_body = (
             f'<div class="hero"><span class="eyebrow">Team detail</span><h2>{esc(name)}</h2>'
-            f'<h2>What the work is about</h2><p>{content_html}</p>'
-            f'<h2>Team Health</h2>{health_html}<div>{member_links_detail}</div></div>'
+            f'<h2>Team Health</h2>{health_html}'
+            f'<h3>RAG status</h3>{rag_status_index(slug(name), team_build_cycle.get(name), team_github_pr_metrics.get(name))}'
+            f'<div>{member_links_detail}</div></div>'
+            + accordion(
+                "Build Cycle Time",
+                build_cycle_time_section(team_build_cycle.get(name)),
+            )
+            + accordion(
+                "GitHub PR Metrics",
+                github_pr_metrics_section(team_github_pr_metrics.get(name)),
+            )
             + accordion(
                 "IBR vs non-IBR work",
                 team_work_section(team_work.get(name)),
@@ -1421,26 +1873,6 @@ def main() -> None:
             f'data-title="{esc(name)}"><div class="breadcrumbs">'
             f'{internal_link("#/", "Overview")} / {esc(name)}</div>{team_body}</section>'
         )
-
-    no_team_people = [
-        person
-        for person in people
-        if not any(person["display_name"] in names for names in team_members.values())
-    ]
-    no_team_links = "".join(
-        internal_link(
-            f"#/people/{slug(person['display_name'])}",
-            person.get("preferred_name") or person["display_name"],
-            css_class="person-link",
-        )
-        for person in no_team_people
-    ) or '<span class="muted">No configured engineers</span>'
-    team_cards.append(
-        '<article class="team-card searchable"><header><div><span class="eyebrow">Team</span>'
-        '<h2>No Team</h2></div></header><p>Configured engineers without a current report-team '
-        'membership are kept visible here.</p><div class="member-list"><strong>People</strong>'
-        f'{no_team_links}</div></article>'
-    )
 
     individual_detail_sections = []
     for person in people:
@@ -1506,24 +1938,56 @@ def main() -> None:
             f'{internal_link("#/", "Overview")} / {esc(display)}</div>{person_body}</section>'
         )
 
-    cards = "".join(feature_card(features[key], items[key], memberships, snapshot_at) for key in sorted(features)) or '<p class="empty">No active IBR items.</p>'
-    freshness = "".join(f'<li><strong>{esc(source["source"])}</strong> {esc(source["scope"])} — {esc(source["observed_at"])}</li>' for source in dashboard["source_freshness"])
-    gaps_html = f"<ul>{''.join(f'<li>{esc(gap)}</li>' for gap in gaps)}</ul>" if gaps else '<p>All configured Jira hygiene fields are evaluable for this snapshot.</p>'
-    overview = (
-        f'''<section class="app-view active" data-route="/" data-title="Overview"><section class="hero"><span class="eyebrow">Pinned evidence report</span><h1>Weekly Engineering Status</h1><p>Snapshot <code>{esc(dashboard['snapshot_id'])}</code> · generated {esc(datetime.now(UTC).isoformat())}</p><div class="grid"><div class="metric"><strong>{len(items)}</strong>active IBR parents</div><div class="metric"><strong>{len(people)}</strong>engineers loaded</div><div class="metric"><strong>{len(selected_rows)}</strong>report teams</div><div class="metric"><strong>{completion_pct(month_credit, month_total)}%</strong>{esc(current_month)} rolled up ({month_done}/{month_total} dated items done)</div></div><details><summary>Source freshness</summary><ul>{freshness}</ul></details></section>'''
-        f'<section><h1>Teams and people</h1><p class="muted">Choose a team or person to open their page.</p><div class="team-grid">{"".join(team_cards)}</div></section>'
-        + accordion("Evidence coverage", gaps_html, classes="panel gap")
-        + accordion(
-            "All IBR Board work",
-            '<div class="filters"><button data-filter="all">All</button>'
-            '<button data-filter="In Progress">In Progress</button>'
-            '<button data-filter="Ready for build">Ready for Build</button></div>' + cards,
+    people_quick_links = "".join(
+        internal_link(
+            f"#/people/{slug(person['display_name'])}",
+            person.get("preferred_name") or person["display_name"],
+            css_class="directory-link",
         )
+        for person in sorted(
+            people,
+            key=lambda person: (person.get("preferred_name") or person["display_name"]).casefold(),
+        )
+    ) or '<span class="muted">No configured people.</span>'
+    overview = (
+        '''<section class="app-view active" data-route="/" data-title="Overview">'''
+        '<header class="landing-header"><span class="eyebrow">Overview</span>'
+        '<h1>Engineering Intelligence</h1>'
+        '<p class="muted">Choose where you want to explore.</p></header>'
+        '<div class="landing-grid">'
+        '<section class="landing-section"><span class="landing-number">01</span>'
+        f'<h2>Teams</h2><p>Open a team health and delivery view.</p><div class="directory-links">{"".join(team_quick_links)}</div></section>'
+        '<section class="landing-section"><span class="landing-number">02</span>'
+        f'<h2>People</h2><p>Open an individual work-context view.</p><div class="directory-links">{people_quick_links}</div></section>'
+        '<section class="landing-section"><span class="landing-number">03</span>'
+        '<h2>Issue Finder</h2><p>Find and inspect Jira work across configured scopes.</p>'
+        '<a class="finder-link" href="#/issue-finder">Open Issue Finder <span aria-hidden="true">→</span></a></section>'
+        '<section class="landing-section"><span class="landing-number">04</span>'
+        '<h2>GitHub Finder</h2><p>Find pull requests and their commits across configured repositories.</p>'
+        '<a class="finder-link" href="#/github-finder">Open GitHub Finder <span aria-hidden="true">→</span></a></section>'
+        '</div>'
         + "</section>"
     )
-    body = overview + "".join(team_detail_sections) + "".join(individual_detail_sections)
-    write_page(args.output, page("Weekly Engineering Status", body))
-    print(json.dumps({"output": str(args.output.resolve()), "snapshot_id": dashboard["snapshot_id"], "features": len(features), "people": len(people), "team_sections": len(team_detail_sections), "individual_sections": len(people), "gaps": gaps,
+    finder_pages = (
+        '<section class="app-view" data-route="/issue-finder" data-title="Issue Finder">'
+        f'<div class="breadcrumbs">{internal_link("#/", "Overview")} / Issue Finder</div>'
+        '<header class="landing-header"><span class="eyebrow">Jira explorer</span>'
+        '<h1>Issue Finder</h1><p class="muted">Filter all Jira issues captured by the configured team scopes.</p></header>'
+        f'{issue_finder_section(issue_finder_issues)}</section>'
+        '<section class="app-view" data-route="/github-finder" data-title="GitHub Finder">'
+        f'<div class="breadcrumbs">{internal_link("#/", "Overview")} / GitHub Finder</div>'
+        '<header class="landing-header"><span class="eyebrow">GitHub explorer</span>'
+        '<h1>GitHub Finder</h1><p class="muted">Filter all pull requests and associated commits pinned in configured repositories.</p></header>'
+        f'{github_finder_section(github_finder, people_directory)}</section>'
+    )
+    body = (
+        overview
+        + finder_pages
+        + "".join(team_detail_sections)
+        + "".join(individual_detail_sections)
+    )
+    write_page(args.output, page("Engineering Intelligence", body, datetime.now(UTC)))
+    print(json.dumps({"output": str(args.output.resolve()), "snapshot_id": dashboard["snapshot_id"], "features": len(features), "people": len(people), "team_sections": len(team_detail_sections), "individual_sections": len(people), "report_cache": {"directory": str(cache_dir.resolve()), **_query_cache_stats}, "gaps": gaps,
         "completion": {
             "current_month": current_month,
             "current_month_done": month_done,

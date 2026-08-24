@@ -19,8 +19,10 @@ from engineering_intelligence.persistence.database import (
 from engineering_intelligence.presentations.attention import AttentionCollection
 from engineering_intelligence.presentations.team_brief import build_team_brief
 from engineering_intelligence.queries.attention import AttentionQuery
+from engineering_intelligence.queries.build_cycle import BuildCycleTimeQuery
 from engineering_intelligence.queries.dashboard import DashboardQuery
 from engineering_intelligence.queries.feature import FeatureQuery
+from engineering_intelligence.queries.github_pr_metrics import GitHubPullRequestMetricsQuery
 from engineering_intelligence.queries.individual import IndividualQuery
 from engineering_intelligence.queries.metrics import MetricsQuery, resolve_metric_team
 from engineering_intelligence.queries.people import PeopleQuery
@@ -90,6 +92,43 @@ def create_server(
             scope=scope,
             date_from=date.fromisoformat(date_from) if date_from else None,
             date_to=date.fromisoformat(date_to) if date_to else None,
+        ).model_dump(mode="json")
+
+    @server.tool(
+        name="get_build_cycle_time",
+        title="Get team Build Cycle Time",
+        annotations=READ_ONLY_TOOL,
+        description=(
+            "Return snapshot-backed In Progress-to-Done calendar time for Epic, "
+            "Feature Request, and FDI Request parents, separated into IBR-linked and "
+            "non-IBR groups. Non-IBR includes every team-assigned issue type outside "
+            "the IBR hierarchy. Includes status-duration attribution and child issue "
+            "cycle evidence."
+        ),
+    )
+    def get_build_cycle_time(snapshot: str, team: str) -> dict[str, Any]:
+        return BuildCycleTimeQuery(sessions).get(
+            snapshot,
+            team,
+            teams_config,
+        ).model_dump(mode="json")
+
+    @server.tool(
+        name="get_github_pr_metrics",
+        title="Get team GitHub PR metrics",
+        annotations=READ_ONLY_TOOL,
+        description=(
+            "Return snapshot-backed pull-request pickup and review time for PRs authored "
+            "by active members of the selected team across all configured repositories, with "
+            "contributing PR links, authors, and reviewers."
+        ),
+    )
+    def get_github_pr_metrics(snapshot: str, team: str) -> dict[str, Any]:
+        return GitHubPullRequestMetricsQuery(sessions).get(
+            snapshot,
+            team,
+            source_config,
+            teams_config,
         ).model_dump(mode="json")
 
     @server.tool(
