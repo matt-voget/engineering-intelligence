@@ -1,6 +1,6 @@
 # GitHub Finder execution plan
 
-**Status:** In progress
+**Status:** Paused — refresh redesign takes priority
 **Owner:** titan
 **Started:** 2026-08-24
 
@@ -54,4 +54,4 @@ scope but does not assign records to teams.
 
 ## Exact next action
 
-Run a fresh complete refresh for the enhanced report.
+Resume report generation after the incremental refresh v2 design is approved and built.
