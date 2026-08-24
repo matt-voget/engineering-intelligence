@@ -230,7 +230,8 @@ means an explicitly verified compatible source result, never a partial snapshot.
 ## Delivery checkpoints
 
 1. Capture a request/timing baseline from the paused receipt and targeted fixture runs.
-2. Add durable run/task state, lifecycle handling, lease, events, status/watch/resume.
+2. **Completed 2026-08-24:** Add durable run/task state, lifecycle handling, lease,
+   events, status/watch/resume (`8d1b112` plus the following checkpoint).
 3. Implement Jira incremental enumeration, cross-scope deduplication, and delta
    changelogs.
 4. Implement GitHub unchanged-PR detail reuse and provider-aware limiter.
@@ -239,7 +240,7 @@ means an explicitly verified compatible source result, never a partial snapshot.
 7. Run fault injection and live before/after benchmarks; tune safe defaults.
 8. Resume the report refresh through the new path, render, validate, and deliver.
 
-## Decisions requested
+## Approved decisions
 
 1. Approve `incremental` as the report default, with `reconcile` scheduled periodically
    and `full` reserved for audit/recovery.

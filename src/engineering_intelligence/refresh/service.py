@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import signal
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
@@ -137,6 +138,7 @@ class RefreshService:
         started_at: datetime | None = None,
         progress_callback: Callable[[RefreshProgressEvent], None] | None = None,
         resume: bool = False,
+        resume_refresh_id: str | None = None,
     ) -> RefreshReceipt:
         started_at = started_at or datetime.now(UTC)
         refresh_id = str(uuid4())
@@ -167,19 +169,34 @@ class RefreshService:
             *(["jira:query:accountable-active-work"] if collect_accountable_work else []),
             *(f"github:{repository.full_name}" for repository in source_config.github.repositories),
         ]
-        run_state = RefreshRunState(
-            refresh_id=refresh_id,
-            status="planned",
-            started_at=started_at,
-            updated_at=started_at,
-            lease_expires_at=started_at + timedelta(seconds=30),
-            source_config_hash=source_hash,
-            organization_config_hash=organization_hash,
-            tasks=[
-                RefreshTaskState(source=source, updated_at=started_at)
-                for source in planned_sources
-            ],
-        )
+        if resume_refresh_id is not None:
+            run_state = load_run_state(paths.root, resume_refresh_id)
+            if run_state.source_config_hash != source_hash:
+                raise ValueError("Cannot resume: source configuration has changed")
+            if run_state.organization_config_hash != organization_hash:
+                raise ValueError("Cannot resume: organization configuration has changed")
+            if [task.source for task in run_state.tasks] != planned_sources:
+                raise ValueError("Cannot resume: planned source manifest has changed")
+            refresh_id = run_state.refresh_id
+            started_at = run_state.started_at
+            run_state.status = "planned"
+            run_state.error = None
+        else:
+            run_state = RefreshRunState(
+                refresh_id=refresh_id,
+                status="planned",
+                started_at=started_at,
+                updated_at=started_at,
+                lease_expires_at=started_at + timedelta(seconds=30),
+                source_config_hash=source_hash,
+                organization_config_hash=organization_hash,
+                tasks=[
+                    RefreshTaskState(source=source, updated_at=started_at)
+                    for source in planned_sources
+                ],
+            )
+        receipt.refresh_id = refresh_id
+        receipt.started_at = started_at
         _write_run_state(paths.root, run_state)
         progress = RefreshProgress(
             refresh_id=refresh_id,
@@ -189,8 +206,13 @@ class RefreshService:
             completed_sources=0,
             total_sources=total_sources,
         )
-        completed_before_resume = _completed_progress_sources(paths.root) if resume else set()
+        completed_before_resume = (
+            {task.source for task in run_state.tasks if task.status == "completed"}
+            if resume_refresh_id is not None
+            else (_completed_progress_sources(paths.root) if resume else set())
+        )
         source_failures: list[str] = []
+        state_lock = threading.Lock()
 
         def publish(
             stage: str,
@@ -222,27 +244,28 @@ class RefreshService:
             progress.events.append(event)
             _write_progress(paths.root, progress)
             _append_event(paths.root, refresh_id, event)
-            run_state.status = (
-                status if status in {"completed", "failed", "cancelled"} else "running"
-            )
-            run_state.updated_at = observed_at
-            run_state.lease_expires_at = observed_at + timedelta(seconds=30)
-            if status in {"failed", "cancelled"}:
-                run_state.error = message
-            if source is not None:
-                task = next(task for task in run_state.tasks if task.source == source)
-                task.updated_at = observed_at
-                task.records_seen = records_seen
-                task.records_changed = records_changed
-                if status == "running":
-                    task.status = "running"
-                    task.attempt += 1
-                elif status == "completed_source":
-                    task.status = "completed"
-                elif status == "failed_source":
-                    task.status = "failed"
-                    task.error = message
-            _write_run_state(paths.root, run_state)
+            with state_lock:
+                run_state.status = (
+                    status if status in {"completed", "failed", "cancelled"} else "running"
+                )
+                run_state.updated_at = observed_at
+                run_state.lease_expires_at = observed_at + timedelta(seconds=30)
+                if status in {"failed", "cancelled"}:
+                    run_state.error = message
+                if source is not None:
+                    task = next(task for task in run_state.tasks if task.source == source)
+                    task.updated_at = observed_at
+                    task.records_seen = records_seen
+                    task.records_changed = records_changed
+                    if status == "running":
+                        task.status = "running"
+                        task.attempt += 1
+                    elif status == "completed_source":
+                        task.status = "completed"
+                    elif status == "failed_source":
+                        task.status = "failed"
+                        task.error = message
+                _write_run_state(paths.root, run_state)
             if progress_callback is not None:
                 progress_callback(event)
 
@@ -266,7 +289,11 @@ class RefreshService:
             raise ValueError("Backup retention must be at least 1")
         paths.root.mkdir(parents=True, exist_ok=True)
         try:
-            with _interrupt_as_exception(), _refresh_lock(paths.root):
+            with (
+                _interrupt_as_exception(),
+                _refresh_lock(paths.root),
+                _lease_heartbeat(paths.root, run_state, state_lock),
+            ):
                 upgrade_database(paths.database)
                 engine = create_sqlite_engine(paths.database)
                 sessions = session_factory(engine)
@@ -593,6 +620,33 @@ def _interrupt_as_exception() -> Iterator[None]:
             signal.signal(signum, handler)
 
 
+@contextmanager
+def _lease_heartbeat(
+    data_root: Path,
+    state: RefreshRunState,
+    state_lock: threading.Lock,
+) -> Iterator[None]:
+    stopped = threading.Event()
+
+    def renew() -> None:
+        while not stopped.wait(15):
+            observed_at = datetime.now(UTC)
+            with state_lock:
+                if state.status not in {"planned", "running"}:
+                    return
+                state.updated_at = observed_at
+                state.lease_expires_at = observed_at + timedelta(seconds=30)
+                _write_run_state(data_root, state)
+
+    thread = threading.Thread(target=renew, name="refresh-lease", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=2)
+
+
 def _backup_path(directory: Path, started_at: datetime) -> Path:
     root = directory.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -653,9 +707,29 @@ def _write_run_state(data_root: Path, state: RefreshRunState) -> None:
     root.mkdir(parents=True, exist_ok=True)
     payload = state.model_dump_json(indent=2) + "\n"
     destination = root / "state.json"
-    temporary = root / ".state.tmp"
+    temporary = root / f".state.{os.getpid()}.tmp"
     temporary.write_text(payload)
     os.replace(temporary, destination)
+
+
+def load_run_state(
+    data_root: Path,
+    refresh_id: str,
+    *,
+    reconcile_stale: bool = True,
+    observed_at: datetime | None = None,
+) -> RefreshRunState:
+    destination = _run_root(data_root, refresh_id) / "state.json"
+    if not destination.exists():
+        raise ValueError(f"Refresh run does not exist: {refresh_id}")
+    state = RefreshRunState.model_validate_json(destination.read_text())
+    now = observed_at or datetime.now(UTC)
+    if reconcile_stale and state.status == "running" and state.lease_expires_at < now:
+        state.status = "stale"
+        state.updated_at = now
+        state.error = "Refresh worker lease expired before a terminal state was recorded"
+        _write_run_state(data_root, state)
+    return state
 
 
 def _append_event(data_root: Path, refresh_id: str, event: RefreshProgressEvent) -> None:

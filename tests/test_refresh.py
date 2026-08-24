@@ -15,6 +15,7 @@ from engineering_intelligence.refresh.service import (
     _accountable_jira_ids,
     _accountable_work_jql,
     _completed_progress_sources,
+    load_run_state,
 )
 from engineering_intelligence.runtime import runtime_paths
 from engineering_intelligence.snapshot_selection import latest_snapshot
@@ -23,8 +24,10 @@ FIXTURES = Path(__file__).parent / "fixtures/jira"
 
 
 class FixtureClient:
-    def get_board_configuration(self, _board_id: int) -> dict[str, Any]:
-        return json.loads((FIXTURES / "board_2168.json").read_text())
+    def get_board_configuration(self, board_id: int) -> dict[str, Any]:
+        payload = json.loads((FIXTURES / "board_2168.json").read_text())
+        payload["id"] = board_id
+        return payload
 
     def iter_board_issues(
         self,
@@ -57,6 +60,17 @@ class FailingClient(FixtureClient):
 class InterruptedClient(FixtureClient):
     def get_board_configuration(self, _board_id: int) -> dict[str, Any]:
         raise KeyboardInterrupt
+
+
+class InterruptSecondClient(FixtureClient):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_board_configuration(self, _board_id: int) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls == 2:
+            raise KeyboardInterrupt
+        return super().get_board_configuration(_board_id)
 
 
 def _source_config() -> SourceConfig:
@@ -303,3 +317,64 @@ def test_refresh_interruption_is_saved_as_cancelled(tmp_path: Path) -> None:
     )
     assert state["status"] == "cancelled"
     assert "KeyboardInterrupt" in state["error"]
+
+
+def test_run_specific_resume_reuses_completed_manifest_tasks(tmp_path: Path) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    source_config = _source_config().model_copy(deep=True)
+    source_config.jira.boards.append(
+        source_config.jira.boards[0].model_copy(update={"id": 2169, "name": "Second"})
+    )
+    first = RefreshService().run(
+        paths,
+        source_config,
+        _teams_config(),
+        jira_client=InterruptSecondClient(),
+    )
+    assert first.status == "cancelled"
+
+    resumed = RefreshService().run(
+        paths,
+        source_config,
+        _teams_config(),
+        jira_client=FixtureClient(),
+        resume_refresh_id=first.refresh_id,
+    )
+
+    assert resumed.status == "completed", resumed.error
+    assert resumed.refresh_id == first.refresh_id
+    state = load_run_state(paths.root, first.refresh_id)
+    assert state.status == "completed"
+    assert [task.status for task in state.tasks] == ["completed", "completed"]
+    assert [task.attempt for task in state.tasks] == [1, 2]
+
+
+def test_status_reconciles_an_expired_running_lease(tmp_path: Path) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    receipt = RefreshService().run(
+        paths,
+        _source_config(),
+        _teams_config(),
+        jira_client=FixtureClient(),
+    )
+    state_path = (
+        paths.root
+        / "receipts"
+        / "refresh"
+        / "runs"
+        / receipt.refresh_id
+        / "state.json"
+    )
+    payload = json.loads(state_path.read_text())
+    payload["status"] = "running"
+    payload["lease_expires_at"] = "2026-01-01T00:00:00Z"
+    state_path.write_text(json.dumps(payload))
+
+    state = load_run_state(
+        paths.root,
+        receipt.refresh_id,
+        observed_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    assert state.status == "stale"
+    assert "lease expired" in (state.error or "")

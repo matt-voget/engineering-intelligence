@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from datetime import date
 from pathlib import Path
 from typing import Annotated, cast
@@ -49,6 +50,7 @@ from engineering_intelligence.queries.people import PeopleQuery
 from engineering_intelligence.queries.team import TeamQuery
 from engineering_intelligence.queries.team_work import TeamWorkQuery
 from engineering_intelligence.refresh import RefreshProgressEvent, RefreshService
+from engineering_intelligence.refresh.service import load_run_state
 from engineering_intelligence.renderers.attention_markdown import (
     render_attention_flag_markdown,
     render_attention_markdown,
@@ -490,8 +492,12 @@ def refresh_run(
     ] = 7,
     resume: Annotated[
         bool,
-        typer.Option("--resume", help="Reuse sources completed by the latest refresh."),
+        typer.Option("--resume", help="Legacy: reuse sources completed by the latest refresh."),
     ] = False,
+    resume_id: Annotated[
+        str | None,
+        typer.Option("--resume-id", help="Resume a compatible durable run by ID."),
+    ] = None,
     data_dir: DataDir = None,
 ) -> None:
     """Run the complete deterministic refresh workflow and save a receipt."""
@@ -512,6 +518,33 @@ def refresh_run(
         backup_retention=backup_retention,
         progress_callback=_echo_refresh_progress,
         resume=resume,
+        resume_refresh_id=resume_id,
+    )
+    typer.echo(receipt.model_dump_json(indent=2))
+    if receipt.status != "completed":
+        raise typer.Exit(1)
+
+
+@refresh_app.command("resume")
+def refresh_resume(
+    refresh_id: Annotated[str, typer.Argument(help="Durable refresh run ID.")],
+    source_config_path: Annotated[
+        Path,
+        typer.Option("--source-config", exists=True, dir_okay=False),
+    ] = Path("config/sources.example.yaml"),
+    teams_config_path: Annotated[
+        Path,
+        typer.Option("--teams-config", exists=True, dir_okay=False),
+    ] = Path("config/teams.example.yaml"),
+    data_dir: DataDir = None,
+) -> None:
+    """Resume only incomplete tasks from a compatible durable run manifest."""
+    receipt = RefreshService().run(
+        runtime_paths(data_dir),
+        load_yaml_model(source_config_path, SourceConfig),
+        load_yaml_model(teams_config_path, TeamsConfig),
+        progress_callback=_echo_refresh_progress,
+        resume_refresh_id=refresh_id,
     )
     typer.echo(receipt.model_dump_json(indent=2))
     if receipt.status != "completed":
@@ -534,6 +567,46 @@ def refresh_progress(data_dir: DataDir = None) -> None:
     if not progress.exists():
         raise typer.BadParameter("No refresh progress exists", param_hint="--data-dir")
     typer.echo(progress.read_text().rstrip())
+
+
+@refresh_app.command("status")
+def refresh_status(
+    refresh_id: Annotated[str, typer.Argument(help="Durable refresh run ID.")],
+    data_dir: DataDir = None,
+) -> None:
+    """Print current durable state, reconciling an expired worker lease to stale."""
+    try:
+        state = load_run_state(runtime_paths(data_dir).root, refresh_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="REFRESH_ID") from exc
+    typer.echo(state.model_dump_json(indent=2))
+
+
+@refresh_app.command("watch")
+def refresh_watch(
+    refresh_id: Annotated[str, typer.Argument(help="Durable refresh run ID.")],
+    follow: Annotated[
+        bool,
+        typer.Option("--follow/--no-follow", help="Continue until the run becomes terminal."),
+    ] = True,
+    data_dir: DataDir = None,
+) -> None:
+    """Stream a run's persisted JSONL events."""
+    root = runtime_paths(data_dir).root
+    events_path = root / "receipts" / "refresh" / "runs" / refresh_id / "events.jsonl"
+    if not events_path.exists():
+        raise typer.BadParameter(f"Refresh run does not exist: {refresh_id}", param_hint="REFRESH_ID")
+    offset = 0
+    while True:
+        with events_path.open() as stream:
+            stream.seek(offset)
+            for line in stream:
+                typer.echo(line.rstrip())
+            offset = stream.tell()
+        state = load_run_state(root, refresh_id)
+        if not follow or state.status in {"cancelled", "completed", "failed", "stale"}:
+            return
+        time.sleep(1)
 
 
 def _echo_refresh_progress(event: RefreshProgressEvent) -> None:
