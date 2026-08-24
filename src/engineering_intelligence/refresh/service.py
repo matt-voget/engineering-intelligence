@@ -430,6 +430,11 @@ class RefreshService:
                                 GitHubClient(
                                     str(source_config.github.api_url),
                                     github_token(source_config.github),
+                                    event_callback=lambda event: publish(
+                                        "github",
+                                        str(event["kind"]),
+                                        str(event["message"]),
+                                    ),
                                 )
                             )
                         github_service = GitHubIngestionService(
@@ -473,10 +478,15 @@ class RefreshService:
                             publish(
                                 "github",
                                 "completed_source",
-                                f"Completed GitHub repository {repository.full_name}",
+                                _delta_completion_message(
+                                    f"GitHub repository {repository.full_name}", run
+                                ),
                                 source=source,
                                 records_seen=run["records_seen"],
                                 records_changed=run["records_changed"],
+                                records_new=run["counters"].get("new"),
+                                records_updated=run["counters"].get("updated"),
+                                records_reused=run["counters"].get("reused"),
                             )
 
                     if source_failures:
@@ -610,9 +620,18 @@ def _run_receipt(
 
 
 def _jira_completion_message(label: str, run: dict[str, Any]) -> str:
+    return _delta_completion_message(label, run, unit="issues")
+
+
+def _delta_completion_message(
+    label: str,
+    run: dict[str, Any],
+    *,
+    unit: str = "pull requests",
+) -> str:
     counters = run["counters"]
     return (
-        f"{label} — {counters.get('checked', 0)} issues checked; "
+        f"{label} — {counters.get('checked', 0)} {unit} checked; "
         f"{counters.get('new', 0)} new, {counters.get('updated', 0)} updated, "
         f"{counters.get('reused', 0)} reused"
     )

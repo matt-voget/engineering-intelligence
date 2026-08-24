@@ -125,6 +125,7 @@ def test_transport_errors_are_retried(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_primary_rate_limit_waits_for_reset(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = 0
     sleeps: list[float] = []
+    events: list[dict[str, object]] = []
 
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal attempts
@@ -146,9 +147,18 @@ def test_primary_rate_limit_waits_for_reset(monkeypatch: pytest.MonkeyPatch) -> 
         "https://api.github.com",
         "token",
         transport=httpx.MockTransport(handler),
+        event_callback=events.append,
     ) as client:
         repository = client.get_repository("gravitee-io/example")
 
     assert repository["full_name"] == "gravitee-io/example"
     assert attempts == 2
     assert sleeps == [11]
+    assert events == [
+        {
+            "provider": "github",
+            "kind": "rate_limit_wait",
+            "message": "GitHub rate limit exhausted; resuming in 11s",
+            "delay_seconds": 11,
+        }
+    ]

@@ -92,12 +92,27 @@ class GitHubIngestionService:
             )
             seen = 1
             changed = 0
+            counters = {"checked": 0, "new": 0, "updated": 0, "reused": 0}
             for pull in self.client.iter_pull_requests(
                 full_name,
                 updated_since=updated_since,
                 max_records=self.max_pull_requests,
                 min_updated_since=min_updated_since,
             ):
+                with self.sessions.begin() as session:
+                    change_kind = self._classify_pull_request(session, full_name, pull)
+                    counters["checked"] += 1
+                    counters[change_kind] += 1
+                    if change_kind == "reused":
+                        existing = session.get(
+                            GitHubPullRequest,
+                            f"{full_name}#{pull['number']}",
+                        )
+                        assert existing is not None
+                        existing.last_seen_at = observed_at
+                if change_kind == "reused":
+                    seen += 1
+                    continue
                 commits = list(
                     self.client.iter_pull_request_commits(full_name, int(pull["number"]))
                 )
@@ -132,6 +147,7 @@ class GitHubIngestionService:
                 run.completed_at = datetime.now(UTC)
                 run.records_seen = seen
                 run.records_changed = changed
+                run.request_context = {**run.request_context, "counters": counters}
             return run_id
         except Exception as error:
             with self.sessions.begin() as session:
@@ -141,6 +157,19 @@ class GitHubIngestionService:
                 run.completed_at = datetime.now(UTC)
                 run.error = f"{type(error).__name__}: {error}"
             raise
+
+    @staticmethod
+    def _classify_pull_request(
+        session: Session,
+        full_name: str,
+        payload: dict[str, Any],
+    ) -> str:
+        pull = session.get(GitHubPullRequest, f"{full_name}#{payload['number']}")
+        if pull is None:
+            return "new"
+        if pull.current_version_hash == _hash(_pull_version(payload)):
+            return "reused"
+        return "updated"
 
     def _upsert_repository(
         self,
