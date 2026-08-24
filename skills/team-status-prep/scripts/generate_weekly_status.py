@@ -1692,20 +1692,14 @@ def main() -> None:
     for name in report_teams:
         if name not in team_rows:
             continue
-        try:
-            team_work[name] = run_json(
-                ["team", "work", name, "--snapshot", args.snapshot,
-                 "--teams-config", str(args.teams_config)], args.data_dir
-            )
-        except subprocess.CalledProcessError:
-            team_work[name] = None
-        try:
-            issue_finder_work[name] = run_json(
-                ["team", "work", name, "--snapshot", args.snapshot,
-                 "--teams-config", str(args.teams_config), "--all-jira"], args.data_dir
-            )
-        except subprocess.CalledProcessError:
-            issue_finder_work[name] = None
+        team_work[name] = run_json(
+            ["team", "work", name, "--snapshot", args.snapshot,
+             "--teams-config", str(args.teams_config)], args.data_dir
+        )
+        issue_finder_work[name] = run_json(
+            ["team", "work", name, "--snapshot", args.snapshot,
+             "--teams-config", str(args.teams_config), "--all-jira"], args.data_dir
+        )
     issue_finder_by_key = {}
     for name in report_teams:
         work = issue_finder_work.get(name) or {}
@@ -1734,14 +1728,11 @@ def main() -> None:
     ]
     for row in directory_rows:
         name = row["person_id"]
-        try:
-            people.append(run_json([
-                "individual", "get", name, "--snapshot", args.snapshot,
-                "--teams-config", str(args.teams_config),
-                "--source-config", str(args.source_config),
-            ], args.data_dir))
-        except subprocess.CalledProcessError:
-            gaps.append(f"Individual context unavailable for {name}: command failed.")
+        people.append(run_json([
+            "individual", "get", name, "--snapshot", args.snapshot,
+            "--teams-config", str(args.teams_config),
+            "--source-config", str(args.source_config),
+        ], args.data_dir))
     memberships = {
         person["jira_account_id"]: {
             team for team, names in team_members.items() if person["display_name"] in names
@@ -1764,15 +1755,9 @@ def main() -> None:
         if key in features:
             hierarchies[key] = features[key]["hierarchy"]
             continue
-        try:
-            hierarchies[key] = run_json(
-                ["feature", "get", key, "--snapshot", args.snapshot], args.data_dir
-            )["hierarchy"]
-        except subprocess.CalledProcessError:
-            gaps.append(
-                f"Child hierarchy unavailable for dated item {key}: "
-                "it contributes completion from its board column alone."
-            )
+        hierarchies[key] = run_json(
+            ["feature", "get", key, "--snapshot", args.snapshot], args.data_dir
+        )["hierarchy"]
     team_completion = {
         name: completion_by_target_date(detail, hierarchies)
         for name, detail in team_details.items()
