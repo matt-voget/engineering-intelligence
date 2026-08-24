@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,7 +23,7 @@ def esc(value: object) -> str:
 
 def run_json(args: list[str], data_dir: Path) -> dict:
     env = os.environ.copy()
-    env.setdefault("UV_CACHE_DIR", "/private/tmp/engintel-uv-cache")
+    env.setdefault("UV_CACHE_DIR", str(Path(tempfile.gettempdir()) / "engintel-uv-cache"))
     result = subprocess.run(
         ["uv", "run", "engintel", *args, "--data-dir", str(data_dir), "--format", "json"],
         check=True, capture_output=True, text=True, env=env,
