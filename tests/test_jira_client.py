@@ -100,3 +100,22 @@ def test_named_jql_scope_uses_bounded_pagination() -> None:
     assert issues[0]["key"] == "A-1"
     assert requests[0].url.params["jql"] == "project = A"
     assert requests[0].url.params["maxResults"] == "100"
+
+
+def test_issue_detail_delta_uses_validated_bounded_jql() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"issues": [], "isLast": True})
+
+    with JiraClient(
+        "https://example.atlassian.net",
+        "owner@example.com",
+        "token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        list(client.iter_issue_details(["100001", "IDN-2"], fields=["summary", "updated"]))
+
+    assert requests[0].url.params["jql"] == 'id in (100001, "IDN-2") ORDER BY key ASC'
+    assert requests[0].url.params["fields"] == "summary,updated"

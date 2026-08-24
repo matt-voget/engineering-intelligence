@@ -232,10 +232,10 @@ means an explicitly verified compatible source result, never a partial snapshot.
 1. Capture a request/timing baseline from the paused receipt and targeted fixture runs.
 2. **Completed 2026-08-24:** Add durable run/task state, lifecycle handling, lease,
    events, status/watch/resume (`8d1b112` plus the following checkpoint).
-3. **In progress:** Jira issue payloads now compare provider `updated` timestamps,
-   preserve scope observations for unchanged issues, and fetch changelogs only for the
-   new/changed delta. Checked/new/updated/reused counters are persisted in ingestion
-   receipts and emitted in refresh events. Minimal-field enumeration remains.
+3. **Completed 2026-08-24:** Jira board/query membership uses minimal fields, compares
+   provider `updated` timestamps, batch-hydrates only new/changed issues, preserves
+   observations for reused issues, and fetches changelogs only for the delta.
+   Checked/new/updated/reused counters are persisted and emitted in refresh events.
 4. Implement GitHub unchanged-PR detail reuse and provider-aware limiter.
 5. Add bounded fetch/apply concurrency and reconciliation mode.
 6. Update the skill and scheduler to use the generic run/watch contract.

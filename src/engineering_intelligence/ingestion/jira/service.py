@@ -1,5 +1,6 @@
 """Idempotent Jira board ingestion orchestration."""
 
+from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -87,15 +88,17 @@ class JiraIngestionService:
             changed_issue_ids: set[str] = set()
             frontier_keys: list[str] = []
             requested_fields = self._requested_fields(configuration)
-            for payload in self.client.iter_board_issues(
-                board_id,
-                fields=requested_fields,
+            supports_delta_hydration = hasattr(self.client, "iter_issue_details")
+            board_fields = self._membership_fields() if supports_delta_hydration else requested_fields
+            board_payloads = self.client.iter_board_issues(board_id, fields=board_fields)
+            for payload, change_kind in self._classified_payloads(
+                board_payloads,
+                requested_fields,
             ):
                 seen += 1
                 seen_issue_ids.add(str(payload["id"]))
                 frontier_keys.append(payload["key"])
                 with self.sessions.begin() as session:
-                    change_kind = self._classify_issue(session, payload)
                     counters["checked"] += 1
                     counters[change_kind] += 1
                     if change_kind != "reused":
@@ -192,9 +195,13 @@ class JiraIngestionService:
             counters = {"checked": 0, "new": 0, "updated": 0, "reused": 0}
             issue_ids: set[str] = set()
             changed_issue_ids: set[str] = set()
-            for payload in self.client.iter_jql_issues(
-                jql,
-                fields=self._requested_fields({}),
+            requested_fields = self._requested_fields({})
+            supports_delta_hydration = hasattr(self.client, "iter_issue_details")
+            query_fields = self._membership_fields() if supports_delta_hydration else requested_fields
+            query_payloads = self.client.iter_jql_issues(jql, fields=query_fields)
+            for payload, change_kind in self._classified_payloads(
+                query_payloads,
+                requested_fields,
             ):
                 issue_id = str(payload["id"])
                 if issue_id in issue_ids:
@@ -202,7 +209,6 @@ class JiraIngestionService:
                 issue_ids.add(issue_id)
                 seen += 1
                 with self.sessions.begin() as session:
-                    change_kind = self._classify_issue(session, payload)
                     counters["checked"] += 1
                     counters[change_kind] += 1
                     if change_kind != "reused":
@@ -398,6 +404,47 @@ class JiraIngestionService:
         if persisted.astimezone(UTC) != source_updated_at.astimezone(UTC):
             return "updated"
         return "reused"
+
+    def _classified_payloads(
+        self,
+        payloads: Iterable[dict[str, Any]],
+        requested_fields: list[str],
+    ) -> Iterator[tuple[dict[str, Any], str]]:
+        if not hasattr(self.client, "iter_issue_details"):
+            for payload in payloads:
+                with self.sessions() as session:
+                    change_kind = self._classify_issue(session, payload)
+                yield payload, change_kind
+            return
+
+        changed: dict[str, str] = {}
+        for payload in payloads:
+            issue_id = str(payload["id"])
+            with self.sessions() as session:
+                change_kind = self._classify_issue(session, payload)
+            if change_kind == "reused":
+                yield payload, change_kind
+            else:
+                changed[issue_id] = change_kind
+        if not changed:
+            return
+        hydrated_ids: set[str] = set()
+        for payload in self.client.iter_issue_details(
+            sorted(changed),
+            fields=requested_fields,
+        ):
+            issue_id = str(payload["id"])
+            if issue_id not in changed:
+                raise ValueError(f"Jira delta hydration returned unrequested issue {issue_id}")
+            hydrated_ids.add(issue_id)
+            yield payload, changed[issue_id]
+        missing = sorted(set(changed) - hydrated_ids)
+        if missing:
+            raise ValueError(f"Jira delta hydration omitted issues: {missing}")
+
+    @staticmethod
+    def _membership_fields() -> list[str]:
+        return ["updated", "parent", "subtasks"]
 
     @staticmethod
     def _mark_issue_seen(session: Session, issue_id: str, observed_at: datetime) -> None:

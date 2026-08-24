@@ -171,6 +171,39 @@ class FixtureJiraClient:
         return [fixture("issue_idn_1.json")]
 
 
+class DeltaJiraClient(FixtureJiraClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.board_field_requests: list[list[str]] = []
+        self.detail_requests: list[list[str]] = []
+
+    def iter_board_issues(
+        self,
+        board_id: int,
+        *,
+        fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        assert board_id == 2168
+        self.board_field_requests.append(fields or [])
+        issue = self.issues[0]
+        return [
+            {
+                "id": issue["id"],
+                "key": issue["key"],
+                "fields": {field: issue["fields"].get(field) for field in fields or []},
+            }
+        ]
+
+    def iter_issue_details(
+        self,
+        issue_ids_or_keys: list[str],
+        *,
+        fields: list[str],
+    ) -> list[dict[str, Any]]:
+        self.detail_requests.append(issue_ids_or_keys)
+        return [issue for issue in self.issues if str(issue["id"]) in issue_ids_or_keys]
+
+
 def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
     database_path = tmp_path / "engintel.db"
     upgrade_database(database_path)
@@ -261,6 +294,28 @@ def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
     assert by_id["ideate_cycle_days"].excluded_missing_completion_count == 2
     assert by_id["ideate_cycle_days"].contributions[0].jira_key == "IDN-1"
     assert "IDN-1" in render_metrics_markdown(metrics)
+
+
+def test_incremental_board_scan_hydrates_only_changed_issue_details(tmp_path: Path) -> None:
+    database_path = tmp_path / "engintel.db"
+    upgrade_database(database_path)
+    sessions = session_factory(create_sqlite_engine(database_path))
+    client = DeltaJiraClient()
+    service = JiraIngestionService(
+        sessions,
+        RawPayloadArchive(tmp_path / "raw"),
+        client,  # type: ignore[arg-type]
+        base_url="https://gravitee.atlassian.net",
+    )
+
+    service.ingest_board(2168)
+    service.ingest_board(2168)
+
+    assert client.board_field_requests == [
+        ["updated", "parent", "subtasks"],
+        ["updated", "parent", "subtasks"],
+    ]
+    assert client.detail_requests == [["100001"]]
 
 
 def test_changed_issue_creates_a_new_version(tmp_path: Path) -> None:

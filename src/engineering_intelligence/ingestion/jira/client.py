@@ -139,6 +139,30 @@ class JiraClient:
             if page.get("isLast", not next_page_token) or not next_page_token:
                 break
 
+    def iter_issue_details(
+        self,
+        issue_ids_or_keys: list[str],
+        *,
+        fields: list[str],
+        issue_batch_size: int = 100,
+    ) -> Iterator[dict[str, Any]]:
+        """Fetch full issue fields for a validated delta in bounded JQL batches."""
+        invalid = [
+            value
+            for value in issue_ids_or_keys
+            if not (value.isdigit() or re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", value))
+        ]
+        if invalid:
+            raise ValueError(f"Invalid Jira issue IDs or keys: {invalid}")
+        for start in range(0, len(issue_ids_or_keys), issue_batch_size):
+            batch = issue_ids_or_keys[start : start + issue_batch_size]
+            identifiers = ", ".join(value if value.isdigit() else f'"{value}"' for value in batch)
+            yield from self.iter_jql_issues(
+                f"id in ({identifiers}) ORDER BY key ASC",
+                fields=fields,
+                page_size=issue_batch_size,
+            )
+
     def iter_issue_changelogs(
         self,
         issue_ids_or_keys: list[str],
