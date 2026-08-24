@@ -1,8 +1,9 @@
 # Incremental refresh v2 design
 
-**Status:** Proposed — awaiting approval
+**Status:** Approved — implementation in progress
 **Owner:** titan
 **Started:** 2026-08-24
+**Approved:** 2026-08-24 by Matt Voget
 
 ## Objective
 
