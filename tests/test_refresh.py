@@ -1,9 +1,11 @@
 import json
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from engineering_intelligence.config import SourceConfig, TeamsConfig
+from engineering_intelligence.config import GitHubRepositoryConfig, SourceConfig, TeamsConfig
 from engineering_intelligence.individual_cache import load_cached_individual
 from engineering_intelligence.persistence.database import (
     create_sqlite_engine,
@@ -71,6 +73,32 @@ class InterruptSecondClient(FixtureClient):
         if self.calls == 2:
             raise KeyboardInterrupt
         return super().get_board_configuration(_board_id)
+
+
+class ConcurrentGitHubClient:
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    def get_repository(self, full_name: str) -> dict[str, Any]:
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        time.sleep(0.05)
+        with self.lock:
+            self.active -= 1
+        return {
+            "id": {"org/one": 1, "org/two": 2}[full_name],
+            "full_name": full_name,
+            "html_url": f"https://github.com/{full_name}",
+            "default_branch": "main",
+            "private": True,
+            "archived": False,
+        }
+
+    def iter_pull_requests(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return []
 
 
 def _source_config() -> SourceConfig:
@@ -382,3 +410,25 @@ def test_status_reconciles_an_expired_running_lease(tmp_path: Path) -> None:
 
     assert state.status == "stale"
     assert "lease expired" in (state.error or "")
+
+
+def test_github_repositories_refresh_with_bounded_workers(tmp_path: Path) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    source_config = _source_config().model_copy(deep=True)
+    source_config.github.repositories = [
+        GitHubRepositoryConfig(full_name="org/one"),
+        GitHubRepositoryConfig(full_name="org/two"),
+    ]
+    github_client = ConcurrentGitHubClient()
+
+    receipt = RefreshService().run(
+        paths,
+        source_config,
+        _teams_config(),
+        jira_client=FixtureClient(),
+        github_client=github_client,
+    )
+
+    assert receipt.status == "completed", receipt.error
+    assert github_client.max_active == 2
+    assert {run["repository"] for run in receipt.github_runs} == {"org/one", "org/two"}

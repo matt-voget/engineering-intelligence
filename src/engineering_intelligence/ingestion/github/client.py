@@ -7,6 +7,8 @@ from typing import Any, Self
 
 import httpx
 
+from engineering_intelligence.ingestion.limiter import RequestLimiter
+
 
 class GitHubClient:
     def __init__(
@@ -19,10 +21,12 @@ class GitHubClient:
         max_rate_limit_wait_seconds: float = 3700,
         transport: httpx.BaseTransport | None = None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
+        limiter: RequestLimiter | None = None,
     ) -> None:
         self.max_retries = max_retries
         self.max_rate_limit_wait_seconds = max_rate_limit_wait_seconds
         self.event_callback = event_callback
+        self.limiter = limiter or RequestLimiter(1)
         self._client = httpx.Client(
             base_url=api_url.rstrip("/"),
             headers={
@@ -125,7 +129,8 @@ class GitHubClient:
         attempt = 0
         while True:
             try:
-                response = self._client.get(path, params=params)
+                with self.limiter.slot():
+                    response = self._client.get(path, params=params)
             except httpx.TransportError:
                 attempt += 1
                 if attempt > self.max_retries:

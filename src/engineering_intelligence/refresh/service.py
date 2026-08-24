@@ -6,6 +6,7 @@ import os
 import signal
 import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from engineering_intelligence.individual_cache import materialize_individuals
 from engineering_intelligence.ingestion.archive import RawPayloadArchive
 from engineering_intelligence.ingestion.github import GitHubClient, GitHubIngestionService
 from engineering_intelligence.ingestion.jira import JiraClient, JiraIngestionService
+from engineering_intelligence.ingestion.limiter import RequestLimiter
 from engineering_intelligence.organization import OrganizationService
 from engineering_intelligence.persistence.database import (
     create_sqlite_engine,
@@ -216,7 +218,16 @@ class RefreshService:
         )
         source_failures: list[str] = []
         state_lock = threading.Lock()
+        publish_lock = threading.Lock()
 
+        def synchronized(function: Callable[..., Any]) -> Callable[..., Any]:
+            def locked(*args: Any, **kwargs: Any) -> Any:
+                with publish_lock:
+                    return function(*args, **kwargs)
+
+            return locked
+
+        @synchronized
         def publish(
             stage: str,
             status: str,
@@ -322,6 +333,7 @@ class RefreshService:
                                 str(source_config.jira.base_url),
                                 email,
                                 token,
+                                limiter=RequestLimiter(source_config.jira.request_concurrency),
                             )
                         )
                     jira_service = JiraIngestionService(
@@ -435,6 +447,9 @@ class RefreshService:
                                         str(event["kind"]),
                                         str(event["message"]),
                                     ),
+                                    limiter=RequestLimiter(
+                                        source_config.github.request_concurrency
+                                    ),
                                 )
                             )
                         github_service = GitHubIngestionService(
@@ -447,6 +462,7 @@ class RefreshService:
                             ),
                             min_refresh_window_days=(source_config.github.min_refresh_window_days),
                         )
+                        pending_repositories = []
                         for repository in repositories:
                             source = f"github:{repository.full_name}"
                             if skip_completed(source):
@@ -457,37 +473,54 @@ class RefreshService:
                                 f"Refreshing GitHub repository {repository.full_name}",
                                 source=source,
                             )
-                            try:
-                                run_id = github_service.ingest_repository(repository.full_name)
-                            except Exception as exc:  # noqa: BLE001 - continue other sources
-                                source_failures.append(f"{source}: {type(exc).__name__}: {exc}")
+                            pending_repositories.append(repository)
+                        with ThreadPoolExecutor(
+                            max_workers=source_config.github.repository_workers,
+                            thread_name_prefix="github-refresh",
+                        ) as executor:
+                            futures = {
+                                executor.submit(
+                                    github_service.ingest_repository,
+                                    repository.full_name,
+                                ): repository
+                                for repository in pending_repositories
+                            }
+                            for future in as_completed(futures):
+                                repository = futures[future]
+                                source = f"github:{repository.full_name}"
+                                try:
+                                    run_id = future.result()
+                                except Exception as exc:  # noqa: BLE001 - aggregate failures
+                                    source_failures.append(
+                                        f"{source}: {type(exc).__name__}: {exc}"
+                                    )
+                                    publish(
+                                        "github",
+                                        "failed_source",
+                                        source_failures[-1],
+                                        source=source,
+                                    )
+                                    continue
+                                run = _run_receipt(
+                                    sessions,
+                                    run_id,
+                                    {"repository": repository.full_name},
+                                )
+                                receipt.github_runs.append(run)
+                                progress.completed_sources += 1
                                 publish(
                                     "github",
-                                    "failed_source",
-                                    source_failures[-1],
+                                    "completed_source",
+                                    _delta_completion_message(
+                                        f"GitHub repository {repository.full_name}", run
+                                    ),
                                     source=source,
+                                    records_seen=run["records_seen"],
+                                    records_changed=run["records_changed"],
+                                    records_new=run["counters"].get("new"),
+                                    records_updated=run["counters"].get("updated"),
+                                    records_reused=run["counters"].get("reused"),
                                 )
-                                continue
-                            run = _run_receipt(
-                                sessions,
-                                run_id,
-                                {"repository": repository.full_name},
-                            )
-                            receipt.github_runs.append(run)
-                            progress.completed_sources += 1
-                            publish(
-                                "github",
-                                "completed_source",
-                                _delta_completion_message(
-                                    f"GitHub repository {repository.full_name}", run
-                                ),
-                                source=source,
-                                records_seen=run["records_seen"],
-                                records_changed=run["records_changed"],
-                                records_new=run["counters"].get("new"),
-                                records_updated=run["counters"].get("updated"),
-                                records_reused=run["counters"].get("reused"),
-                            )
 
                     if source_failures:
                         raise RuntimeError(

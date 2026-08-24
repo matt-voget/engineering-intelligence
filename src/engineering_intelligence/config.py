@@ -60,6 +60,7 @@ class JiraConfig(BaseModel):
     hierarchy_max_depth: int = Field(default=10, ge=0, le=25)
     hierarchy_batch_size: int = Field(default=40, ge=1, le=100)
     collect_accountable_work: bool = False
+    request_concurrency: int = Field(default=2, ge=1, le=16)
     boards: list[JiraBoardConfig]
     queries: list[JiraQueryConfig] = Field(default_factory=list)
 
@@ -88,6 +89,8 @@ class GitHubConfig(BaseModel):
     # Every run re-verifies at least this many days of pull-request history per
     # repository; the per-repository cap only limits records older than this window.
     min_refresh_window_days: int = Field(default=31, ge=1, le=365)
+    request_concurrency: int = Field(default=4, ge=1, le=16)
+    repository_workers: int = Field(default=4, ge=1, le=16)
     repositories: list[GitHubRepositoryConfig] = Field(default_factory=list)
 
 

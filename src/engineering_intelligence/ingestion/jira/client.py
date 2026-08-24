@@ -7,6 +7,8 @@ from typing import Any, Self
 
 import httpx
 
+from engineering_intelligence.ingestion.limiter import RequestLimiter
+
 
 class JiraClient:
     """Access the Jira Agile API with bounded pagination and retries."""
@@ -20,8 +22,10 @@ class JiraClient:
         timeout_seconds: float = 30,
         max_retries: int = 3,
         transport: httpx.BaseTransport | None = None,
+        limiter: RequestLimiter | None = None,
     ) -> None:
         self.max_retries = max_retries
+        self.limiter = limiter or RequestLimiter(1)
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             auth=httpx.BasicAuth(email, token),
@@ -209,7 +213,8 @@ class JiraClient:
     ) -> dict[str, Any]:
         attempt = 0
         while True:
-            response = self._client.request(method, path, params=params, json=json)
+            with self.limiter.slot():
+                response = self._client.request(method, path, params=params, json=json)
             if response.status_code not in {429, 500, 502, 503, 504}:
                 response.raise_for_status()
                 return response.json()
