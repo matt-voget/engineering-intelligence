@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from engineering_intelligence.ingestion.archive import RawPayloadArchive
 from engineering_intelligence.ingestion.jira.client import JiraClient
-from engineering_intelligence.ingestion.jira.normalization import normalize_issue
+from engineering_intelligence.ingestion.jira.normalization import normalize_issue, parse_datetime
 from engineering_intelligence.persistence.models import (
     Board,
     BoardColumn,
@@ -83,6 +83,7 @@ class JiraIngestionService:
             seen = 0
             changed = 0
             seen_issue_ids: set[str] = set()
+            changed_issue_ids: set[str] = set()
             frontier_keys: list[str] = []
             requested_fields = self._requested_fields(configuration)
             for payload in self.client.iter_board_issues(
@@ -93,16 +94,21 @@ class JiraIngestionService:
                 seen_issue_ids.add(str(payload["id"]))
                 frontier_keys.append(payload["key"])
                 with self.sessions.begin() as session:
-                    self._record_payload(
-                        session,
-                        run_id,
-                        "issue",
-                        str(payload["id"]),
-                        payload,
-                        observed_at,
-                        {"board_id": board_id},
-                    )
-                    changed += self._upsert_issue(session, payload, observed_at)
+                    issue_changed = self._issue_changed(session, payload)
+                    if issue_changed:
+                        self._record_payload(
+                            session,
+                            run_id,
+                            "issue",
+                            str(payload["id"]),
+                            payload,
+                            observed_at,
+                            {"board_id": board_id},
+                        )
+                        changed += self._upsert_issue(session, payload, observed_at)
+                        changed_issue_ids.add(str(payload["id"]))
+                    else:
+                        self._mark_issue_seen(session, str(payload["id"]), observed_at)
                     # Make the issue visible to SQLite before inserting the
                     # board-membership row that references it.
                     session.flush()
@@ -115,7 +121,7 @@ class JiraIngestionService:
                             ingestion_run_id=run_id,
                         )
                     )
-            hierarchy_seen, hierarchy_changed = self._ingest_hierarchy(
+            hierarchy_seen, hierarchy_changed, hierarchy_changed_ids = self._ingest_hierarchy(
                 run_id,
                 board_id,
                 observed_at,
@@ -125,11 +131,12 @@ class JiraIngestionService:
             )
             seen += hierarchy_seen
             changed += hierarchy_changed
+            changed_issue_ids.update(hierarchy_changed_ids)
             changelog_seen, changelog_changed = self._ingest_status_changelogs(
                 run_id,
                 board_id,
                 observed_at,
-                seen_issue_ids,
+                changed_issue_ids,
             )
             seen += changelog_seen
             changed += changelog_changed
@@ -178,6 +185,7 @@ class JiraIngestionService:
             seen = 0
             changed = 0
             issue_ids: set[str] = set()
+            changed_issue_ids: set[str] = set()
             for payload in self.client.iter_jql_issues(
                 jql,
                 fields=self._requested_fields({}),
@@ -188,16 +196,21 @@ class JiraIngestionService:
                 issue_ids.add(issue_id)
                 seen += 1
                 with self.sessions.begin() as session:
-                    self._record_payload(
-                        session,
-                        run_id,
-                        "query_issue",
-                        issue_id,
-                        payload,
-                        observed_at,
-                        {"query_id": scope_id},
-                    )
-                    changed += self._upsert_issue(session, payload, observed_at)
+                    issue_changed = self._issue_changed(session, payload)
+                    if issue_changed:
+                        self._record_payload(
+                            session,
+                            run_id,
+                            "query_issue",
+                            issue_id,
+                            payload,
+                            observed_at,
+                            {"query_id": scope_id},
+                        )
+                        changed += self._upsert_issue(session, payload, observed_at)
+                        changed_issue_ids.add(issue_id)
+                    else:
+                        self._mark_issue_seen(session, issue_id, observed_at)
                     session.flush()
                     session.add(
                         JiraScopeObservation(
@@ -212,7 +225,7 @@ class JiraIngestionService:
                 run_id,
                 None,
                 observed_at,
-                issue_ids,
+                changed_issue_ids,
                 scope_id=scope_id,
             )
             seen += transition_seen
@@ -243,6 +256,8 @@ class JiraIngestionService:
         *,
         scope_id: str | None = None,
     ) -> tuple[int, int]:
+        if not issue_ids:
+            return 0, 0
         seen = 0
         changed = 0
         for issue_log in self.client.iter_issue_changelogs(
@@ -311,9 +326,10 @@ class JiraIngestionService:
         requested_fields: list[str],
         frontier_keys: list[str],
         seen_issue_ids: set[str],
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, set[str]]:
         hierarchy_seen = 0
         hierarchy_changed = 0
+        changed_issue_ids: set[str] = set()
         for depth in range(1, self.hierarchy_max_depth + 1):
             next_frontier: list[str] = []
             for start in range(0, len(frontier_keys), self.hierarchy_batch_size):
@@ -329,28 +345,52 @@ class JiraIngestionService:
                     next_frontier.append(payload["key"])
                     hierarchy_seen += 1
                     with self.sessions.begin() as session:
-                        self._record_payload(
-                            session,
-                            run_id,
-                            "hierarchy_issue",
-                            issue_id,
-                            payload,
-                            observed_at,
-                            {
-                                "board_id": board_id,
-                                "hierarchy_depth": depth,
-                                "parent_keys": parent_keys,
-                            },
-                        )
-                        hierarchy_changed += self._upsert_issue(
-                            session,
-                            payload,
-                            observed_at,
-                        )
+                        issue_changed = self._issue_changed(session, payload)
+                        if issue_changed:
+                            self._record_payload(
+                                session,
+                                run_id,
+                                "hierarchy_issue",
+                                issue_id,
+                                payload,
+                                observed_at,
+                                {
+                                    "board_id": board_id,
+                                    "hierarchy_depth": depth,
+                                    "parent_keys": parent_keys,
+                                },
+                            )
+                            hierarchy_changed += self._upsert_issue(
+                                session,
+                                payload,
+                                observed_at,
+                            )
+                            changed_issue_ids.add(issue_id)
+                        else:
+                            self._mark_issue_seen(session, issue_id, observed_at)
             if not next_frontier:
                 break
             frontier_keys = next_frontier
-        return hierarchy_seen, hierarchy_changed
+        return hierarchy_seen, hierarchy_changed, changed_issue_ids
+
+    def _issue_changed(self, session: Session, payload: dict[str, Any]) -> bool:
+        issue = session.get(JiraIssue, str(payload["id"]))
+        if issue is None:
+            return True
+        source_updated_at = parse_datetime((payload.get("fields") or {}).get("updated"))
+        if source_updated_at is None or issue.last_source_updated_at is None:
+            return True
+        persisted = issue.last_source_updated_at
+        if persisted.tzinfo is None:
+            persisted = persisted.replace(tzinfo=UTC)
+        return persisted.astimezone(UTC) != source_updated_at.astimezone(UTC)
+
+    @staticmethod
+    def _mark_issue_seen(session: Session, issue_id: str, observed_at: datetime) -> None:
+        issue = session.get(JiraIssue, issue_id)
+        assert issue is not None
+        issue.last_seen_at = observed_at
+        issue.is_deleted = False
 
     def _record_payload(
         self,

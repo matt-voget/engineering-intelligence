@@ -232,8 +232,9 @@ means an explicitly verified compatible source result, never a partial snapshot.
 1. Capture a request/timing baseline from the paused receipt and targeted fixture runs.
 2. **Completed 2026-08-24:** Add durable run/task state, lifecycle handling, lease,
    events, status/watch/resume (`8d1b112` plus the following checkpoint).
-3. Implement Jira incremental enumeration, cross-scope deduplication, and delta
-   changelogs.
+3. **In progress:** Jira issue payloads now compare provider `updated` timestamps,
+   preserve scope observations for unchanged issues, and fetch changelogs only for the
+   new/changed delta. Minimal-field enumeration and explicit counters remain.
 4. Implement GitHub unchanged-PR detail reuse and provider-aware limiter.
 5. Add bounded fetch/apply concurrency and reconciliation mode.
 6. Update the skill and scheduler to use the generic run/watch contract.

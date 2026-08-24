@@ -64,6 +64,7 @@ class FixtureJiraClient:
     def __init__(self) -> None:
         self.board = fixture("board_2168.json")
         self.issues = [fixture("issue_idn_1.json")]
+        self.changelog_requests: list[list[str]] = []
 
     def get_board_configuration(self, board_id: int) -> dict[str, Any]:
         assert board_id == 2168
@@ -99,6 +100,7 @@ class FixtureJiraClient:
         field_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         assert field_ids == ["status"]
+        self.changelog_requests.append(issue_ids_or_keys)
         return [
             {
                 "issueId": "100001",
@@ -227,9 +229,8 @@ def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
             "In Progress",
         ]
         assert transitions[0].first_seen_at.replace(tzinfo=UTC) == first_at
-        assert transitions[0].last_seen_at.replace(tzinfo=UTC) == (
-            first_at + timedelta(minutes=15)
-        )
+        assert transitions[0].last_seen_at.replace(tzinfo=UTC) == first_at
+        assert len(client.changelog_requests) == 1
 
     metrics = MetricsQuery(sessions).get(
         "metrics-fixture",
@@ -260,6 +261,7 @@ def test_changed_issue_creates_a_new_version(tmp_path: Path) -> None:
     )
     service.ingest_board(2168)
     client.issues[0]["fields"]["summary"] = "Updated summary"
+    client.issues[0]["fields"]["updated"] = "2026-07-30T12:00:00+00:00"
     service.ingest_board(2168)
 
     with sessions() as session:
