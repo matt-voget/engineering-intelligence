@@ -7,6 +7,9 @@ identity, and team ordering. Run the complete refresh first and require a receip
 `status: completed`, a new snapshot ID, every configured Jira board/query run, and
 every configured GitHub repository run. A failed or missing configured source blocks
 rendering. The normalized store is the deduplication boundary; never merge raw exports.
+The default report refresh mode is `incremental`. Persist and report the refresh ID,
+consume its JSONL events for progress, and render only after its durable state and
+terminal receipt both say `completed`. Resume only that exact compatible run ID.
 
 The Jira board whose configured role is `ibr` (the IBR board; `portfolio` is a legacy
 alias) supplies the report workflow. If none has that role, the first configured board

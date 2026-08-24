@@ -53,11 +53,13 @@ def test_macos_schedule_install_status_and_uninstall_are_owned(
     assert "export JIRA_API_TOKEN=" in wrapper_text
     assert "engintel-jira-test" in wrapper_text
     assert "engintel refresh run" in wrapper_text
+    assert "--mode incremental" in wrapper_text
     assert str(tmp_path / "backups") in wrapper_text
     assert service.status()["installed"] is True
     assert service.status()["github_keychain_enabled"] is True
     assert service.status()["jira_keychain_enabled"] is True
     assert service.status()["state"]["jira_keychain_service"] == "engintel-jira-test"
+    assert service.status()["state"]["mode"] == "incremental"
     assert runner.commands[0][0:2] == ["launchctl", "bootstrap"]
 
     removed = service.uninstall()
@@ -113,3 +115,22 @@ def test_schedule_requires_complete_jira_keychain_identity(tmp_path: Path) -> No
             tmp_path / "data",
             jira_keychain_service="engintel-jira-test",
         )
+
+
+def test_linux_schedule_restarts_failed_refresh_and_persists_mode(tmp_path: Path) -> None:
+    service = SchedulerService(
+        tmp_path / "repo",
+        tmp_path / "config",
+        system_name="Linux",
+        home=tmp_path / "home",
+        runner=RecordingRunner(),
+    )
+
+    state = service.install(tmp_path / "data", mode="reconcile")
+
+    wrapper = Path(state.wrapper_path).read_text()
+    unit = Path(state.definition_paths[0]).read_text()
+    assert "--mode reconcile" in wrapper
+    assert "Restart=on-failure" in unit
+    assert "RestartSec=30" in unit
+    assert state.mode == "reconcile"

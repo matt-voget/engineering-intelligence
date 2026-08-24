@@ -25,6 +25,8 @@ this skill. Use `ENGINTEL_DATA_DIR` for the persistent runtime.
 
 - Always run the complete refresh workflow when generating a report. Do not reuse a
   cached or earlier snapshot for a new report.
+- Use `incremental` mode by default. Use `reconcile` only when requested or on the
+  configured reconciliation cadence; reserve `full` for audit/recovery.
 - Require a completed receipt for every configured Jira scope and GitHub repository.
 - Rely on the ingestion layer's stable source keys to deduplicate Jira issues, pull
   requests, commits, and reviews. Never concatenate exports or deduplicate in prose.
@@ -42,10 +44,24 @@ Current-status CLI command:
 
 ```bash
 uv run engintel refresh run \
+  --mode incremental \
   --source-config SOURCE_CONFIG \
   --teams-config TEAMS_CONFIG \
   --data-dir DATA_DIR
 ```
+
+Run this synchronously in the foreground, or through the owned scheduler. Do not use
+an ad-hoc detached shell process. Progress is JSONL on stderr and durable under
+`DATA_DIR/receipts/refresh/runs/REFRESH_ID/events.jsonl`; translate its structured
+checked/new/updated/reused counters into periodic human updates. Do not infer health
+from silence.
+
+If execution is interrupted or disappears, run `engintel refresh status REFRESH_ID`.
+A `stale`, `cancelled`, or `failed` state blocks rendering. After remediating the
+cause, use `engintel refresh resume REFRESH_ID --mode MODE` with the same source/team
+configuration; never use the legacy latest-run `--resume` shortcut. Use
+`engintel refresh watch REFRESH_ID` when another owned process is executing the run.
+Every non-completed command exit is a report-generation failure and must be surfaced.
 
 Stop on authentication, ingestion, migration, coverage, receipt, or integrity failure.
 Do not render from partial, stale, or remembered data.

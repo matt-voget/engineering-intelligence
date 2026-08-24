@@ -680,6 +680,10 @@ def schedule_install(
             help="macOS Keychain account containing the Jira API token.",
         ),
     ] = None,
+    mode: Annotated[
+        Literal["incremental", "reconcile", "full"],
+        typer.Option("--mode", help="Scheduled refresh strategy."),
+    ] = "incremental",
     config_dir: Annotated[
         Path | None,
         typer.Option("--config-dir", help="Directory containing installation state."),
@@ -707,6 +711,7 @@ def schedule_install(
         jira_keychain_service=jira_keychain_service,
         jira_keychain_account=jira_keychain_account,
         jira_token_env=source_config.jira.token_env,
+        mode=mode,
     )
     typer.echo(state.model_dump_json(indent=2))
 

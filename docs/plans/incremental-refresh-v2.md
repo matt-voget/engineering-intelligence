@@ -243,7 +243,9 @@ means an explicitly verified compatible source result, never a partial snapshot.
    board/query scopes use two. Striped per-issue coordination prevents overlapping Jira
    scopes from racing duplicate writes; progress is serialized and failures aggregate.
    Incremental/reconcile/full modes are durable and resume-compatible.
-6. Update the skill and scheduler to use the generic run/watch contract.
+6. **Completed 2026-08-24:** The report skill requires incremental foreground/owned
+   execution, structured progress, exact-ID status/watch/resume, and terminal coverage
+   checks. The scheduler persists mode and restarts failed owned jobs with logged exits.
 7. Run fault injection and live before/after benchmarks; tune safe defaults.
 8. Resume the report refresh through the new path, render, validate, and deliver.
 
