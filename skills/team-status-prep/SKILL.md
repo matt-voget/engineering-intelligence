@@ -10,6 +10,9 @@ it exactly. Use `scripts/generate_weekly_status.py` only after the refresh succe
 The required result is one portable HTML single-page app with an overview route and
 one client-side route for every team and individual; do not create a companion report
 directory.
+The GitHub Finder route must contain every snapshot-pinned pull request and associated
+commit in configured repository scope, with combined filters, paging, sorting, and
+independent hide/show/reorder column controls. GitHub Issues are out of scope.
 Embed the Engineering Intelligence logo from `assets/engineering-intelligence-logo.png`
 as a data URI, show the generation timestamp in the top navigation, and keep date
 filters local to the table or metric group they affect.

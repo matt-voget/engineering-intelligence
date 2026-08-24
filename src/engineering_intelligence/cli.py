@@ -41,6 +41,7 @@ from engineering_intelligence.queries.attention import AttentionQuery
 from engineering_intelligence.queries.build_cycle import BuildCycleTimeQuery
 from engineering_intelligence.queries.dashboard import DashboardQuery
 from engineering_intelligence.queries.feature import FeatureQuery
+from engineering_intelligence.queries.github_finder import GitHubFinderQuery
 from engineering_intelligence.queries.github_pr_metrics import GitHubPullRequestMetricsQuery
 from engineering_intelligence.queries.individual import IndividualQuery
 from engineering_intelligence.queries.metrics import MetricsQuery, resolve_metric_team
@@ -389,6 +390,33 @@ def github_sync(
             sort_keys=True,
         )
     )
+
+
+@github_app.command("finder")
+def github_finder(
+    snapshot: Annotated[
+        str,
+        typer.Option("--snapshot", help="Snapshot ID or unique snapshot name."),
+    ],
+    source_config_path: Annotated[
+        Path,
+        typer.Option("--source-config", exists=True, dir_okay=False),
+    ] = Path("config/sources.example.yaml"),
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Output format: json."),
+    ] = "json",
+    data_dir: DataDir = None,
+) -> None:
+    """List snapshot-pinned pull requests and their commits for GitHub Finder."""
+    if output_format != "json":
+        raise typer.BadParameter("Expected json", param_hint="--format")
+    source_config = load_yaml_model(source_config_path, SourceConfig)
+    paths = runtime_paths(data_dir)
+    upgrade_database(paths.database)
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    view = GitHubFinderQuery(sessions).get(snapshot, source_config)
+    typer.echo(view.model_dump_json(indent=2))
 
 
 @snapshot_app.command("create")

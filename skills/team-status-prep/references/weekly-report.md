@@ -46,8 +46,12 @@ Create exactly one self-contained HTML single-page app with embedded CSS and Jav
   skipped steps in the ordered delivery workflow. User-supplied Amber and Red cycle
   thresholds color and symbolize qualifying cells, while missing or incomplete
   evidence uses a distinct treatment. A row filter surfaces any issue with at least
-  one Red or Amber cell. Never invent default thresholds. `#/github-finder` remains
-  a routed placeholder page.
+  one Red or Amber cell. Never invent default thresholds. `#/github-finder` provides
+  one deduplicated, paged table of every pull request and associated commit pinned in
+  configured repository scope. It supports combined text, record type, repository,
+  state, author, reviewer, linked-Jira, and local date filters plus sortable columns.
+  Users can add, remove, and reorder visible GitHub columns independently of the Jira
+  finder. GitHub Issues and an independent default-branch commit crawl are out of scope.
 - `#/teams/TEAM` shows workflow, hierarchy, health, hygiene, metrics, Jira/GitHub
   classification when its configured query exists, Build Cycle Time split between
   IBR-linked parents and all non-IBR team-assigned issue types with status/child

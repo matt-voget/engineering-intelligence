@@ -349,3 +349,26 @@ def test_legend_keys_only_the_states_present(generator):
     assert "In progress" not in legend
     assert "Unknown" not in legend
     assert generator.completion_legend_html(counts()) == ""
+
+
+def test_github_finder_embeds_compact_paged_records_and_controls(generator):
+    html = generator.github_finder_section({
+        "records": [{
+            "record_type": "pull_request", "repository": "acme/api",
+            "identifier": "#42", "title": "Ship finder", "url": "https://github/pr/42",
+            "state": "merged", "draft": False, "author_login": "octocat",
+            "created_at": "2026-08-01T00:00:00Z", "updated_at": "2026-08-02T00:00:00Z",
+            "merged_at": "2026-08-03T00:00:00Z", "authored_at": None,
+            "committed_at": None, "head_ref": "finder", "base_ref": "main",
+            "commit_count": 2, "review_count": 1, "reviewers": ["reviewer"],
+            "pull_requests": [], "jira_keys": ["ENG-1"],
+            "jira_urls": {"ENG-1": "https://jira/ENG-1"},
+        }],
+        "data_quality_notes": ["Pinned evidence."],
+    })
+    assert 'class="github-finder-table"' in html
+    assert 'data-gh-filter="repository"' in html
+    assert 'data-gh-filter="reviewer"' in html
+    assert 'class="column-manager github-column-manager"' in html
+    assert 'id="github-finder-data"' in html
+    assert "Ship finder" in html and "ENG-1" in html
