@@ -358,6 +358,7 @@ class RefreshService:
                         hierarchy_max_depth=source_config.jira.hierarchy_max_depth,
                         hierarchy_batch_size=source_config.jira.hierarchy_batch_size,
                     )
+                    pending_boards = []
                     for board in source_config.jira.boards:
                         source = f"jira:board:{board.id}"
                         if skip_completed(source):
@@ -368,24 +369,51 @@ class RefreshService:
                             f"Refreshing Jira board {board.id}",
                             source=source,
                         )
-                        run_id = jira_service.ingest_board(
-                            board.id,
-                            force_refresh=mode != "incremental",
-                        )
-                        run = _run_receipt(sessions, run_id, {"board_id": board.id})
-                        receipt.jira_runs.append(run)
-                        progress.completed_sources += 1
-                        publish(
-                            "jira",
-                            "completed_source",
-                            _jira_completion_message(f"Jira board {board.id}", run),
-                            source=source,
-                            records_seen=run["records_seen"],
-                            records_changed=run["records_changed"],
-                            records_new=run["counters"].get("new"),
-                            records_updated=run["counters"].get("updated"),
-                            records_reused=run["counters"].get("reused"),
-                        )
+                        pending_boards.append(board)
+                    with ThreadPoolExecutor(
+                        max_workers=source_config.jira.source_workers,
+                        thread_name_prefix="jira-board-refresh",
+                    ) as executor:
+                        deferred_interrupt: BaseException | None = None
+                        futures = {
+                            executor.submit(
+                                jira_service.ingest_board,
+                                board.id,
+                                force_refresh=mode != "incremental",
+                            ): board
+                            for board in pending_boards
+                        }
+                        for future in as_completed(futures):
+                            board = futures[future]
+                            source = f"jira:board:{board.id}"
+                            try:
+                                run_id = future.result()
+                            except (KeyboardInterrupt, RefreshInterrupted) as exc:
+                                deferred_interrupt = exc
+                                continue
+                            except Exception as exc:  # noqa: BLE001 - aggregate failures
+                                source_failures.append(
+                                    f"{source}: {type(exc).__name__}: {exc}"
+                                )
+                                publish("jira", "failed_source", source_failures[-1], source=source)
+                                continue
+                            run = _run_receipt(sessions, run_id, {"board_id": board.id})
+                            receipt.jira_runs.append(run)
+                            progress.completed_sources += 1
+                            publish(
+                                "jira",
+                                "completed_source",
+                                _jira_completion_message(f"Jira board {board.id}", run),
+                                source=source,
+                                records_seen=run["records_seen"],
+                                records_changed=run["records_changed"],
+                                records_new=run["counters"].get("new"),
+                                records_updated=run["counters"].get("updated"),
+                                records_reused=run["counters"].get("reused"),
+                            )
+                        if deferred_interrupt is not None:
+                            raise deferred_interrupt
+                    pending_queries = []
                     for query in source_config.jira.queries:
                         if not query.enabled:
                             continue
@@ -398,25 +426,45 @@ class RefreshService:
                             f"Refreshing Jira query {query.id}",
                             source=source,
                         )
-                        run_id = jira_service.ingest_query(
-                            query.id,
-                            query.jql,
-                            force_refresh=mode != "incremental",
-                        )
-                        run = _run_receipt(sessions, run_id, {"query_id": query.id})
-                        receipt.jira_runs.append(run)
-                        progress.completed_sources += 1
-                        publish(
-                            "jira",
-                            "completed_source",
-                            _jira_completion_message(f"Jira query {query.id}", run),
-                            source=source,
-                            records_seen=run["records_seen"],
-                            records_changed=run["records_changed"],
-                            records_new=run["counters"].get("new"),
-                            records_updated=run["counters"].get("updated"),
-                            records_reused=run["counters"].get("reused"),
-                        )
+                        pending_queries.append(query)
+                    with ThreadPoolExecutor(
+                        max_workers=source_config.jira.source_workers,
+                        thread_name_prefix="jira-query-refresh",
+                    ) as executor:
+                        futures = {
+                            executor.submit(
+                                jira_service.ingest_query,
+                                query.id,
+                                query.jql,
+                                force_refresh=mode != "incremental",
+                            ): query
+                            for query in pending_queries
+                        }
+                        for future in as_completed(futures):
+                            query = futures[future]
+                            source = f"jira:query:{query.id}"
+                            try:
+                                run_id = future.result()
+                            except Exception as exc:  # noqa: BLE001 - aggregate failures
+                                source_failures.append(
+                                    f"{source}: {type(exc).__name__}: {exc}"
+                                )
+                                publish("jira", "failed_source", source_failures[-1], source=source)
+                                continue
+                            run = _run_receipt(sessions, run_id, {"query_id": query.id})
+                            receipt.jira_runs.append(run)
+                            progress.completed_sources += 1
+                            publish(
+                                "jira",
+                                "completed_source",
+                                _jira_completion_message(f"Jira query {query.id}", run),
+                                source=source,
+                                records_seen=run["records_seen"],
+                                records_changed=run["records_changed"],
+                                records_new=run["counters"].get("new"),
+                                records_updated=run["counters"].get("updated"),
+                                records_reused=run["counters"].get("reused"),
+                            )
                     derived_jira_queries: list[str] = []
                     if collect_accountable_work:
                         query_id = "accountable-active-work"

@@ -239,11 +239,10 @@ means an explicitly verified compatible source result, never a partial snapshot.
 4. **Completed 2026-08-24:** Unchanged PRs reuse normalized commit/review detail,
    GitHub delta counters are persisted, rate-limit/retry waits emit generic events,
    and shared provider request limiters enforce Jira 2 / GitHub 4 defaults.
-5. **In progress:** GitHub repositories run through four bounded workers with serialized
-   durable progress and aggregated failures. Explicit incremental/reconcile/full modes
-   are persisted and resume-compatible; reconcile/full re-read unchanged details and
-   changelogs idempotently. Jira cross-scope planning remains before Jira sources can
-   safely run concurrently.
+5. **Completed 2026-08-24:** GitHub repositories use four bounded workers and Jira
+   board/query scopes use two. Striped per-issue coordination prevents overlapping Jira
+   scopes from racing duplicate writes; progress is serialized and failures aggregate.
+   Incremental/reconcile/full modes are durable and resume-compatible.
 6. Update the skill and scheduler to use the generic run/watch contract.
 7. Run fault injection and live before/after benchmarks; tune safe defaults.
 8. Resume the report refresh through the new path, render, validate, and deliver.

@@ -5,13 +5,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from engineering_intelligence.config import GitHubRepositoryConfig, SourceConfig, TeamsConfig
+from sqlalchemy import func, select
+
+from engineering_intelligence.config import (
+    GitHubRepositoryConfig,
+    JiraQueryConfig,
+    SourceConfig,
+    TeamsConfig,
+)
 from engineering_intelligence.individual_cache import load_cached_individual
 from engineering_intelligence.persistence.database import (
     create_sqlite_engine,
     session_factory,
 )
-from engineering_intelligence.persistence.models import Snapshot
+from engineering_intelligence.persistence.models import JiraIssueVersion, Snapshot
 from engineering_intelligence.refresh import RefreshService
 from engineering_intelligence.refresh.service import (
     _accountable_jira_ids,
@@ -99,6 +106,22 @@ class ConcurrentGitHubClient:
 
     def iter_pull_requests(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return []
+
+
+class ConcurrentJiraClient(FixtureClient):
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
+
+    def iter_jql_issues(self, _jql: str, *, fields=None) -> list[dict[str, Any]]:
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        time.sleep(0.05)
+        with self.lock:
+            self.active -= 1
+        return [json.loads((FIXTURES / "issue_idn_1.json").read_text())]
 
 
 def _source_config() -> SourceConfig:
@@ -433,3 +456,28 @@ def test_github_repositories_refresh_with_bounded_workers(tmp_path: Path) -> Non
     assert receipt.status == "completed", receipt.error
     assert github_client.max_active == 2
     assert {run["repository"] for run in receipt.github_runs} == {"org/one", "org/two"}
+
+
+def test_overlapping_jira_queries_refresh_concurrently_without_duplicate_versions(
+    tmp_path: Path,
+) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    source_config = _source_config().model_copy(deep=True)
+    source_config.jira.queries = [
+        JiraQueryConfig(id="one", name="One", purpose="test", jql="project = IDN"),
+        JiraQueryConfig(id="two", name="Two", purpose="test", jql="project = IDN"),
+    ]
+    jira_client = ConcurrentJiraClient()
+
+    receipt = RefreshService().run(
+        paths,
+        source_config,
+        _teams_config(),
+        jira_client=jira_client,
+    )
+
+    assert receipt.status == "completed", receipt.error
+    assert jira_client.max_active == 2
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    with sessions() as session:
+        assert session.scalar(select(func.count()).select_from(JiraIssueVersion)) == 1

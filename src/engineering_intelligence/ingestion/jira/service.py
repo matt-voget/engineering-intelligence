@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from engineering_intelligence.ingestion.archive import RawPayloadArchive
 from engineering_intelligence.ingestion.jira.client import JiraClient
 from engineering_intelligence.ingestion.jira.normalization import normalize_issue, parse_datetime
+from engineering_intelligence.ingestion.limiter import StripedLock
 from engineering_intelligence.persistence.models import (
     Board,
     BoardColumn,
@@ -38,6 +39,7 @@ class JiraIngestionService:
         gravitee_customers_field_id: str | None = None,
         hierarchy_max_depth: int = 10,
         hierarchy_batch_size: int = 40,
+        issue_locks: StripedLock | None = None,
     ) -> None:
         self.sessions = sessions
         self.archive = archive
@@ -48,6 +50,7 @@ class JiraIngestionService:
         self.gravitee_customers_field_id = gravitee_customers_field_id
         self.hierarchy_max_depth = hierarchy_max_depth
         self.hierarchy_batch_size = hierarchy_batch_size
+        self.issue_locks = issue_locks or StripedLock()
 
     def ingest_board(
         self,
@@ -106,7 +109,8 @@ class JiraIngestionService:
                 seen += 1
                 seen_issue_ids.add(str(payload["id"]))
                 frontier_keys.append(payload["key"])
-                with self.sessions.begin() as session:
+                with self.issue_locks.slot(str(payload["id"])), self.sessions.begin() as session:
+                    change_kind = self._classify_issue(session, payload)
                     counters["checked"] += 1
                     counters[change_kind] += 1
                     if force_refresh or change_kind != "reused":
@@ -220,7 +224,8 @@ class JiraIngestionService:
                     continue
                 issue_ids.add(issue_id)
                 seen += 1
-                with self.sessions.begin() as session:
+                with self.issue_locks.slot(issue_id), self.sessions.begin() as session:
+                    change_kind = self._classify_issue(session, payload)
                     counters["checked"] += 1
                     counters[change_kind] += 1
                     if force_refresh or change_kind != "reused":
@@ -292,7 +297,7 @@ class JiraIngestionService:
             field_ids=["status"],
         ):
             issue_id = str(issue_log["issueId"])
-            with self.sessions.begin() as session:
+            with self.issue_locks.slot(issue_id), self.sessions.begin() as session:
                 self._record_payload(
                     session,
                     run_id,
@@ -373,7 +378,7 @@ class JiraIngestionService:
                     seen_issue_ids.add(issue_id)
                     next_frontier.append(payload["key"])
                     hierarchy_seen += 1
-                    with self.sessions.begin() as session:
+                    with self.issue_locks.slot(issue_id), self.sessions.begin() as session:
                         change_kind = self._classify_issue(session, payload)
                         counters["checked"] += 1
                         counters[change_kind] += 1

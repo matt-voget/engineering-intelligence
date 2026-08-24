@@ -61,6 +61,7 @@ class JiraConfig(BaseModel):
     hierarchy_batch_size: int = Field(default=40, ge=1, le=100)
     collect_accountable_work: bool = False
     request_concurrency: int = Field(default=2, ge=1, le=16)
+    source_workers: int = Field(default=2, ge=1, le=16)
     boards: list[JiraBoardConfig]
     queries: list[JiraQueryConfig] = Field(default_factory=list)
 
