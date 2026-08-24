@@ -47,11 +47,11 @@ scope but does not assign records to teams.
   independent column management; update report tests and contract.
   - The full dataset is embedded compactly and filtered client-side; only the current
     100-row page is materialized in the DOM.
-- [ ] Run targeted and full verification, then commit and push the implementation.
+- [x] Run targeted and full verification, then commit and push the implementation.
   - Evidence: Ruff passes, all 120 tests pass, skill validation passes, JavaScript
     syntax validation passes, and `git diff --check` passes.
 - [ ] Run a fresh complete refresh, regenerate and validate the report, and deliver it.
 
 ## Exact next action
 
-Commit and push the verified implementation, then run a fresh refresh for the report.
+Run a fresh complete refresh for the enhanced report.
