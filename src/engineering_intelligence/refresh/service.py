@@ -3,9 +3,10 @@
 import fcntl
 import json
 import os
+import signal
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -89,6 +90,37 @@ class RefreshProgress(BaseModel):
     events: list[RefreshProgressEvent] = Field(default_factory=list)
 
 
+class RefreshTaskState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    status: str = "planned"
+    attempt: int = 0
+    updated_at: datetime
+    records_seen: int | None = None
+    records_changed: int | None = None
+    error: str | None = None
+
+
+class RefreshRunState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "2"
+    refresh_id: str
+    status: str
+    started_at: datetime
+    updated_at: datetime
+    lease_expires_at: datetime
+    source_config_hash: str
+    organization_config_hash: str
+    tasks: list[RefreshTaskState]
+    error: str | None = None
+
+
+class RefreshInterrupted(RuntimeError):
+    """A refresh stopped because the process received an interrupt signal."""
+
+
 class RefreshService:
     def run(
         self,
@@ -129,6 +161,26 @@ class RefreshService:
             + int(collect_accountable_work)
             + len(source_config.github.repositories)
         )
+        planned_sources = [
+            *(f"jira:board:{board.id}" for board in source_config.jira.boards),
+            *(f"jira:query:{query.id}" for query in source_config.jira.queries if query.enabled),
+            *(["jira:query:accountable-active-work"] if collect_accountable_work else []),
+            *(f"github:{repository.full_name}" for repository in source_config.github.repositories),
+        ]
+        run_state = RefreshRunState(
+            refresh_id=refresh_id,
+            status="planned",
+            started_at=started_at,
+            updated_at=started_at,
+            lease_expires_at=started_at + timedelta(seconds=30),
+            source_config_hash=source_hash,
+            organization_config_hash=organization_hash,
+            tasks=[
+                RefreshTaskState(source=source, updated_at=started_at)
+                for source in planned_sources
+            ],
+        )
+        _write_run_state(paths.root, run_state)
         progress = RefreshProgress(
             refresh_id=refresh_id,
             status="running",
@@ -169,6 +221,28 @@ class RefreshService:
             progress.updated_at = observed_at
             progress.events.append(event)
             _write_progress(paths.root, progress)
+            _append_event(paths.root, refresh_id, event)
+            run_state.status = (
+                status if status in {"completed", "failed", "cancelled"} else "running"
+            )
+            run_state.updated_at = observed_at
+            run_state.lease_expires_at = observed_at + timedelta(seconds=30)
+            if status in {"failed", "cancelled"}:
+                run_state.error = message
+            if source is not None:
+                task = next(task for task in run_state.tasks if task.source == source)
+                task.updated_at = observed_at
+                task.records_seen = records_seen
+                task.records_changed = records_changed
+                if status == "running":
+                    task.status = "running"
+                    task.attempt += 1
+                elif status == "completed_source":
+                    task.status = "completed"
+                elif status == "failed_source":
+                    task.status = "failed"
+                    task.error = message
+            _write_run_state(paths.root, run_state)
             if progress_callback is not None:
                 progress_callback(event)
 
@@ -192,7 +266,7 @@ class RefreshService:
             raise ValueError("Backup retention must be at least 1")
         paths.root.mkdir(parents=True, exist_ok=True)
         try:
-            with _refresh_lock(paths.root):
+            with _interrupt_as_exception(), _refresh_lock(paths.root):
                 upgrade_database(paths.database)
                 engine = create_sqlite_engine(paths.database)
                 sessions = session_factory(engine)
@@ -432,10 +506,11 @@ class RefreshService:
                     )
                 receipt.status = "completed"
                 publish("complete", "completed", "Refresh completed")
-        except Exception as exc:  # noqa: BLE001 - every failure must produce a receipt
-            receipt.status = "failed"
+        except BaseException as exc:  # noqa: BLE001 - terminal state must always be durable
+            interrupted = isinstance(exc, (KeyboardInterrupt, RefreshInterrupted))
+            receipt.status = "cancelled" if interrupted else "failed"
             receipt.error = f"{type(exc).__name__}: {exc}"
-            publish("failed", "failed", receipt.error)
+            publish(receipt.status, receipt.status, receipt.error)
         receipt.completed_at = datetime.now(UTC)
         _write_receipt(paths.root, receipt)
         return receipt
@@ -501,6 +576,23 @@ def _refresh_lock(data_root: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
+@contextmanager
+def _interrupt_as_exception() -> Iterator[None]:
+    previous: dict[signal.Signals, Any] = {}
+
+    def interrupt(signum: int, _frame: Any) -> None:
+        raise RefreshInterrupted(f"received {signal.Signals(signum).name}")
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, interrupt)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def _backup_path(directory: Path, started_at: datetime) -> Path:
     root = directory.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -550,6 +642,29 @@ def _write_progress(data_root: Path, progress: RefreshProgress) -> None:
     temporary_latest = progress_root / ".latest.tmp"
     temporary_latest.write_text(payload)
     os.replace(temporary_latest, latest)
+
+
+def _run_root(data_root: Path, refresh_id: str) -> Path:
+    return data_root / "receipts" / "refresh" / "runs" / refresh_id
+
+
+def _write_run_state(data_root: Path, state: RefreshRunState) -> None:
+    root = _run_root(data_root, state.refresh_id)
+    root.mkdir(parents=True, exist_ok=True)
+    payload = state.model_dump_json(indent=2) + "\n"
+    destination = root / "state.json"
+    temporary = root / ".state.tmp"
+    temporary.write_text(payload)
+    os.replace(temporary, destination)
+
+
+def _append_event(data_root: Path, refresh_id: str, event: RefreshProgressEvent) -> None:
+    root = _run_root(data_root, refresh_id)
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / "events.jsonl").open("a") as stream:
+        stream.write(event.model_dump_json() + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _completed_progress_sources(data_root: Path) -> set[str]:

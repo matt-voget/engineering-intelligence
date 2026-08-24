@@ -54,6 +54,11 @@ class FailingClient(FixtureClient):
         raise RuntimeError("fixture source unavailable")
 
 
+class InterruptedClient(FixtureClient):
+    def get_board_configuration(self, _board_id: int) -> dict[str, Any]:
+        raise KeyboardInterrupt
+
+
 def _source_config() -> SourceConfig:
     return SourceConfig.model_validate(
         {
@@ -197,6 +202,12 @@ def test_refresh_creates_pinned_snapshot_flags_receipt_and_backup(
     )
     assert completed_source["source"] == "jira:board:2168"
     assert completed_source["records_seen"] == 1
+    run_root = paths.root / "receipts" / "refresh" / "runs" / receipt.refresh_id
+    state = json.loads((run_root / "state.json").read_text())
+    assert state["status"] == "completed"
+    assert state["tasks"][0]["status"] == "completed"
+    events = [json.loads(line) for line in (run_root / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["status"] == "completed"
 
     sessions = session_factory(create_sqlite_engine(paths.database))
     with sessions() as session:
@@ -267,3 +278,28 @@ def test_completed_progress_sources_supports_interrupted_resume(tmp_path: Path) 
         "jira:board:2168",
         "github:org/done",
     }
+
+
+def test_refresh_interruption_is_saved_as_cancelled(tmp_path: Path) -> None:
+    paths = runtime_paths(tmp_path / "data")
+
+    receipt = RefreshService().run(
+        paths,
+        _source_config(),
+        _teams_config(),
+        jira_client=InterruptedClient(),
+    )
+
+    assert receipt.status == "cancelled"
+    state = json.loads(
+        (
+            paths.root
+            / "receipts"
+            / "refresh"
+            / "runs"
+            / receipt.refresh_id
+            / "state.json"
+        ).read_text()
+    )
+    assert state["status"] == "cancelled"
+    assert "KeyboardInterrupt" in state["error"]
