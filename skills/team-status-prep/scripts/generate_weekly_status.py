@@ -1585,14 +1585,15 @@ def logo_data_uri() -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-def page(title: str, body: str, generated_at: datetime) -> str:
+def page(title: str, body: str, generated_at: datetime, snapshot_id: str) -> str:
     generated_iso = generated_at.isoformat().replace("+00:00", "Z")
     generated_label = generated_at.strftime("%Y-%m-%d %H:%M UTC")
     nav = (
         f'<a class="brand" href="#/"><img src="{logo_data_uri()}" alt="">'
         '<span>Engineering Intelligence</span></a>'
         '<span class="generated">Report generated'
-        f'<time datetime="{generated_iso}">{generated_label}</time></span>'
+        f'<time datetime="{generated_iso}">{generated_label}</time>'
+        f'<span>Snapshot {esc(snapshot_id)}</span></span>'
     )
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{CSS}</style></head><body><nav>{nav}</nav><main id="top">{body}</main><script>{JS}</script></body></html>'''
 
@@ -1986,7 +1987,15 @@ def main() -> None:
         + "".join(team_detail_sections)
         + "".join(individual_detail_sections)
     )
-    write_page(args.output, page("Engineering Intelligence", body, datetime.now(UTC)))
+    write_page(
+        args.output,
+        page(
+            "Engineering Intelligence",
+            body,
+            datetime.now(UTC),
+            dashboard["snapshot_id"],
+        ),
+    )
     print(json.dumps({"output": str(args.output.resolve()), "snapshot_id": dashboard["snapshot_id"], "features": len(features), "people": len(people), "team_sections": len(team_detail_sections), "individual_sections": len(people), "report_cache": {"directory": str(cache_dir.resolve()), **_query_cache_stats}, "gaps": gaps,
         "completion": {
             "current_month": current_month,

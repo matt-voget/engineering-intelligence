@@ -2,6 +2,7 @@
 
 import importlib.util
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,19 @@ def test_run_json_fails_loudly_on_corrupt_cache(generator, tmp_path, monkeypatch
     )
     with pytest.raises(RuntimeError, match="Invalid report cache entry"):
         generator.run_json(["example", "get"], tmp_path)
+
+
+def test_page_includes_snapshot_provenance(generator, monkeypatch):
+    monkeypatch.setattr(generator, "logo_data_uri", lambda: "data:image/png;base64,test")
+    html = generator.page(
+        "Engineering Intelligence",
+        "<section>Report</section>",
+        datetime(2026, 8, 30, 9, 23, tzinfo=UTC),
+        "181106e0-3dde-4150-a467-2b4d0e326709",
+    )
+    assert "Report generated" in html
+    assert "2026-08-30 09:23 UTC" in html
+    assert "Snapshot 181106e0-3dde-4150-a467-2b4d0e326709" in html
 
 
 def test_done_column_is_the_numerator_per_month(generator):
