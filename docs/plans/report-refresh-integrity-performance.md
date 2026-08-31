@@ -56,6 +56,8 @@ duplicated and unnecessarily serial snapshot queries.
    snapshots.
 3. **Completed 2026-08-31:** Removed duplicate team-work queries and added deterministic
    three-worker materialization for independent team, feature, and individual views.
+   Refresh-side individual cache materialization now uses the same bounded concurrency
+   instead of serially computing all 16 people.
 4. **In progress:** Verify targeted and full tests; record timing evidence.
 5. Run one fresh live refresh, render from its pinned snapshot, validate, and deliver
    the report.

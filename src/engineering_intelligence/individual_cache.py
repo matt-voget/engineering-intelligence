@@ -1,6 +1,7 @@
 """Materialized Individual views for fast agent-facing reads."""
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -9,6 +10,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from engineering_intelligence.config import TeamsConfig
 from engineering_intelligence.presentations.people import IndividualDetail
 from engineering_intelligence.queries.individual import IndividualQuery
+
+INDIVIDUAL_CACHE_WORKERS = 3
 
 
 def cache_individual(root: Path, individual: IndividualDetail) -> Path:
@@ -56,12 +59,19 @@ def materialize_individuals(
     sessions: sessionmaker[Session],
     teams_config: TeamsConfig,
 ) -> int:
-    query = IndividualQuery(sessions, teams_config=teams_config)
     person_ids = sorted(
         {member.id for team in teams_config.teams for member in team.members if member.active}
     )
-    for person_id in person_ids:
+
+    def materialize(person_id: str) -> None:
+        query = IndividualQuery(sessions, teams_config=teams_config)
         cache_individual(root, query.get(snapshot_id, person_id))
+
+    with ThreadPoolExecutor(
+        max_workers=min(INDIVIDUAL_CACHE_WORKERS, len(person_ids) or 1),
+        thread_name_prefix="individual-cache",
+    ) as executor:
+        list(executor.map(materialize, person_ids))
     return len(person_ids)
 
 
