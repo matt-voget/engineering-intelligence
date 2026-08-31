@@ -106,6 +106,7 @@ class RefreshTaskState(BaseModel):
     updated_at: datetime
     records_seen: int | None = None
     records_changed: int | None = None
+    receipt: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -122,6 +123,8 @@ class RefreshRunState(BaseModel):
     source_config_hash: str
     organization_config_hash: str
     tasks: list[RefreshTaskState]
+    snapshot_id: str | None = None
+    snapshot_name: str | None = None
     error: str | None = None
 
 
@@ -248,6 +251,7 @@ class RefreshService:
             records_new: int | None = None,
             records_updated: int | None = None,
             records_reused: int | None = None,
+            source_receipt: dict[str, Any] | None = None,
         ) -> None:
             observed_at = datetime.now(UTC)
             event = RefreshProgressEvent(
@@ -291,6 +295,8 @@ class RefreshService:
                         task.attempt += 1
                     elif status == "completed_source":
                         task.status = "completed"
+                        if source_receipt is not None:
+                            task.receipt = source_receipt
                     elif status == "failed_source":
                         task.status = "failed"
                         task.error = message
@@ -410,6 +416,7 @@ class RefreshService:
                                 records_new=run["counters"].get("new"),
                                 records_updated=run["counters"].get("updated"),
                                 records_reused=run["counters"].get("reused"),
+                                source_receipt=run,
                             )
                         if deferred_interrupt is not None:
                             raise deferred_interrupt
@@ -464,6 +471,7 @@ class RefreshService:
                                 records_new=run["counters"].get("new"),
                                 records_updated=run["counters"].get("updated"),
                                 records_reused=run["counters"].get("reused"),
+                                source_receipt=run,
                             )
                     derived_jira_queries: list[str] = []
                     if collect_accountable_work:
@@ -496,6 +504,7 @@ class RefreshService:
                                 records_new=run["counters"].get("new"),
                                 records_updated=run["counters"].get("updated"),
                                 records_reused=run["counters"].get("reused"),
+                                source_receipt=run,
                             )
                         derived_jira_queries.append(query_id)
 
@@ -586,6 +595,7 @@ class RefreshService:
                                     records_new=run["counters"].get("new"),
                                     records_updated=run["counters"].get("updated"),
                                     records_reused=run["counters"].get("reused"),
+                                    source_receipt=run,
                                 )
 
                     if source_failures:
@@ -594,25 +604,53 @@ class RefreshService:
                             + "; ".join(source_failures)
                         )
 
+                _assemble_source_receipts(receipt, run_state)
                 name = snapshot_name or started_at.strftime("refresh-%Y%m%dT%H%M%SZ")
-                publish("snapshot", "running", f"Creating snapshot {name}")
-                snapshot = SnapshotService(sessions).create(
-                    [board.id for board in source_config.jira.boards],
-                    jira_queries=[query.id for query in source_config.jira.queries if query.enabled]
-                    + derived_jira_queries,
-                    github_repositories=[
-                        repository.full_name for repository in source_config.github.repositories
-                    ],
-                    name=name,
-                    created_at=datetime.now(UTC),
-                    teams_config=teams_config,
-                    source_config=source_config,
-                )
+                snapshot_service = SnapshotService(sessions)
+                if run_state.snapshot_id is not None:
+                    snapshot = snapshot_service.resolve(run_state.snapshot_id)
+                    publish("snapshot", "running", f"Reusing snapshot {snapshot.name}")
+                else:
+                    publish("snapshot", "running", f"Creating snapshot {name}")
+                    try:
+                        snapshot = snapshot_service.create(
+                            [board.id for board in source_config.jira.boards],
+                            jira_queries=[
+                                query.id
+                                for query in source_config.jira.queries
+                                if query.enabled
+                            ]
+                            + derived_jira_queries,
+                            github_repositories=[
+                                repository.full_name
+                                for repository in source_config.github.repositories
+                            ],
+                            name=name,
+                            created_at=datetime.now(UTC),
+                            teams_config=teams_config,
+                            source_config=source_config,
+                        )
+                    except ValueError as exc:
+                        if "Snapshot name already exists" not in str(exc):
+                            raise
+                        snapshot = snapshot_service.resolve_compatible(
+                            name,
+                            source_config_hash=source_hash,
+                            organization_config_hash=organization_hash,
+                            ingestion_run_ids={
+                                run["run_id"]
+                                for run in [*receipt.jira_runs, *receipt.github_runs]
+                            },
+                        )
+                    with state_lock:
+                        run_state.snapshot_id = snapshot.id
+                        run_state.snapshot_name = snapshot.name
+                        _write_run_state(paths.root, run_state)
                 receipt.snapshot_id = snapshot.id
                 receipt.snapshot_name = snapshot.name
                 receipt.organization_config_hash = snapshot.organization_config_hash
                 receipt.source_config_hash = snapshot.source_config_hash
-                publish("snapshot", "completed_stage", f"Created snapshot {name}")
+                publish("snapshot", "completed_stage", f"Pinned snapshot {snapshot.name}")
                 publish("flags", "running", "Evaluating health flags")
                 dashboard = FlagService(sessions).record_dashboard(
                     DashboardQuery(
@@ -716,6 +754,26 @@ def _run_receipt(
             "records_changed": run.records_changed,
             "counters": (run.request_context or {}).get("counters", {}),
         }
+
+
+def _assemble_source_receipts(
+    receipt: RefreshReceipt,
+    run_state: RefreshRunState,
+) -> None:
+    missing = [task.source for task in run_state.tasks if task.receipt is None]
+    if missing:
+        raise ValueError(
+            "Completed refresh tasks are missing durable receipt data: "
+            + ", ".join(missing)
+        )
+    receipt.jira_runs = [
+        task.receipt for task in run_state.tasks
+        if task.source.startswith("jira:") and task.receipt is not None
+    ]
+    receipt.github_runs = [
+        task.receipt for task in run_state.tasks
+        if task.source.startswith("github:") and task.receipt is not None
+    ]
 
 
 def _jira_completion_message(label: str, run: dict[str, Any]) -> str:

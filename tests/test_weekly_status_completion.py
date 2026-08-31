@@ -2,6 +2,8 @@
 
 import importlib.util
 import subprocess
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -97,6 +99,32 @@ def test_run_json_fails_loudly_on_corrupt_cache(generator, tmp_path, monkeypatch
     )
     with pytest.raises(RuntimeError, match="Invalid report cache entry"):
         generator.run_json(["example", "get"], tmp_path)
+
+
+def test_run_json_many_is_bounded_and_preserves_request_order(
+    generator, tmp_path, monkeypatch
+):
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_run_json(args, _data_dir):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return {"value": args[0]}
+
+    monkeypatch.setattr(generator, "run_json", fake_run_json)
+    monkeypatch.setattr(generator, "REPORT_QUERY_WORKERS", 2)
+
+    result = generator.run_json_many([[str(index)] for index in range(5)], tmp_path)
+
+    assert result == [{"value": str(index)} for index in range(5)]
+    assert max_active == 2
 
 
 def test_page_includes_snapshot_provenance(generator, monkeypatch):

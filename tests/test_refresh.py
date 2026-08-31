@@ -403,6 +403,50 @@ def test_run_specific_resume_reuses_completed_manifest_tasks(tmp_path: Path) -> 
     assert state.status == "completed"
     assert [task.status for task in state.tasks] == ["completed", "completed"]
     assert [task.attempt for task in state.tasks] == [1, 2]
+    assert [run["board_id"] for run in resumed.jira_runs] == [2168, 2169]
+    assert len({run["run_id"] for run in resumed.jira_runs}) == 2
+
+
+def test_resume_reuses_snapshot_created_before_interruption(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    paths = runtime_paths(tmp_path / "data")
+    calls = 0
+
+    def interrupt_once(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyboardInterrupt
+        return 1
+
+    monkeypatch.setattr(
+        "engineering_intelligence.refresh.service.materialize_individuals",
+        interrupt_once,
+    )
+    first = RefreshService().run(
+        paths,
+        _source_config(),
+        _teams_config(),
+        jira_client=FixtureClient(),
+        started_at=datetime(2026, 8, 31, 17, 0, tzinfo=UTC),
+    )
+    assert first.status == "cancelled"
+    state_after_interrupt = load_run_state(paths.root, first.refresh_id)
+    assert state_after_interrupt.snapshot_id == first.snapshot_id
+
+    resumed = RefreshService().run(
+        paths,
+        _source_config(),
+        _teams_config(),
+        jira_client=FixtureClient(),
+        resume_refresh_id=first.refresh_id,
+    )
+
+    assert resumed.status == "completed", resumed.error
+    assert resumed.snapshot_id == first.snapshot_id
+    assert len(resumed.jira_runs) == 1
 
 
 def test_status_reconciles_an_expired_running_lease(tmp_path: Path) -> None:

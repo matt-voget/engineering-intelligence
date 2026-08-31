@@ -13,6 +13,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,6 +24,8 @@ _query_cache_dir: Path | None = None
 _query_cache_context = ""
 _query_cache_rebuild = False
 _query_cache_stats = {"hits": 0, "misses": 0}
+_query_cache_stats_lock = threading.Lock()
+REPORT_QUERY_WORKERS = 3
 
 
 def esc(value: object) -> str:
@@ -37,9 +41,11 @@ def run_json(args: list[str], data_dir: Path) -> dict:
             raise RuntimeError(f"Invalid report cache entry {cache_path}: {exc}") from exc
         if cached.get("args") != args or cached.get("version") != REPORT_CACHE_VERSION:
             raise RuntimeError(f"Mismatched report cache entry {cache_path}")
-        _query_cache_stats["hits"] += 1
+        with _query_cache_stats_lock:
+            _query_cache_stats["hits"] += 1
         return cached["payload"]
-    _query_cache_stats["misses"] += 1
+    with _query_cache_stats_lock:
+        _query_cache_stats["misses"] += 1
     print(f"report materialization: {' '.join(args[:4])}", file=sys.stderr, flush=True)
     env = os.environ.copy()
     env.setdefault("UV_CACHE_DIR", str(Path(tempfile.gettempdir()) / "engintel-uv-cache"))
@@ -58,6 +64,16 @@ def run_json(args: list[str], data_dir: Path) -> dict:
             temporary_path = Path(handle.name)
         os.replace(temporary_path, cache_path)
     return payload
+
+
+def run_json_many(requests: list[list[str]], data_dir: Path) -> list[dict]:
+    if not requests:
+        return []
+    with ThreadPoolExecutor(
+        max_workers=min(REPORT_QUERY_WORKERS, len(requests)),
+        thread_name_prefix="report-query",
+    ) as executor:
+        return list(executor.map(lambda args: run_json(args, data_dir), requests))
 
 
 def configure_query_cache(
@@ -1658,49 +1674,42 @@ def main() -> None:
         for name in report_teams
     }
     selected_rows = [team_rows[name] for name in report_teams]
-    team_metrics = {
-        name: run_json([
+    team_metrics = dict(zip(report_teams, run_json_many([
+        [
             "metrics", "get", "--snapshot", args.snapshot, "--team", name,
             "--teams-config", str(args.teams_config),
-        ], args.data_dir)
+        ]
         for name in report_teams
-    }
-    team_build_cycle = {
-        name: run_json([
+    ], args.data_dir), strict=True))
+    team_build_cycle = dict(zip(report_teams, run_json_many([
+        [
             "metrics", "build-cycle", "--snapshot", args.snapshot, "--team", name,
             "--teams-config", str(args.teams_config),
-        ], args.data_dir)
+        ]
         for name in report_teams
-    }
-    team_github_pr_metrics = {
-        name: run_json([
+    ], args.data_dir), strict=True))
+    team_github_pr_metrics = dict(zip(report_teams, run_json_many([
+        [
             "metrics", "github-pr", "--snapshot", args.snapshot, "--team", name,
             "--source-config", str(args.source_config),
             "--teams-config", str(args.teams_config),
-        ], args.data_dir)
+        ]
         for name in report_teams
-    }
-    team_details = {
-        name: run_json([
+    ], args.data_dir), strict=True))
+    team_details = dict(zip(report_teams, run_json_many([
+        [
             "team", "get", name, "--snapshot", args.snapshot,
             "--source-config", str(args.source_config),
             "--teams-config", str(args.teams_config),
-        ], args.data_dir)
+        ]
         for name in report_teams
-    }
-    team_work = {}
-    issue_finder_work = {}
-    for name in report_teams:
-        if name not in team_rows:
-            continue
-        team_work[name] = run_json(
-            ["team", "work", name, "--snapshot", args.snapshot,
-             "--teams-config", str(args.teams_config)], args.data_dir
-        )
-        issue_finder_work[name] = run_json(
-            ["team", "work", name, "--snapshot", args.snapshot,
-             "--teams-config", str(args.teams_config), "--all-jira"], args.data_dir
-        )
+    ], args.data_dir), strict=True))
+    team_work = dict(zip(report_teams, run_json_many([
+        ["team", "work", name, "--snapshot", args.snapshot,
+         "--teams-config", str(args.teams_config), "--all-jira"]
+        for name in report_teams
+    ], args.data_dir), strict=True))
+    issue_finder_work = team_work
     issue_finder_by_key = {}
     for name in report_teams:
         work = issue_finder_work.get(name) or {}
@@ -1719,21 +1728,22 @@ def main() -> None:
         for row in selected_rows
         for item in [*row.get("in_progress", []), *row.get("ready_for_build", [])]
     }
-    features = {
-        key: run_json(["feature", "get", key, "--snapshot", args.snapshot], args.data_dir)
-        for key in sorted(items)
-    }
+    item_keys = sorted(items)
+    features = dict(zip(item_keys, run_json_many([
+        ["feature", "get", key, "--snapshot", args.snapshot] for key in item_keys
+    ], args.data_dir), strict=True))
     people = []
     gaps = [
         "Literal GitHub Issues and their descriptions are not ingested; GitHub evidence is limited to pull requests, commits, and reviews."
     ]
-    for row in directory_rows:
-        name = row["person_id"]
-        people.append(run_json([
+    people = run_json_many([
+        [
             "individual", "get", name, "--snapshot", args.snapshot,
             "--teams-config", str(args.teams_config),
             "--source-config", str(args.source_config),
-        ], args.data_dir))
+        ]
+        for name in [row["person_id"] for row in directory_rows]
+    ], args.data_dir)
     memberships = {
         person["jira_account_id"]: {
             team for team, names in team_members.items() if person["display_name"] in names
@@ -1752,13 +1762,18 @@ def main() -> None:
         and TARGET_MONTH_RE.match(item.get("target_date_value") or "")
     })
     hierarchies = {}
-    for key in dated_keys:
-        if key in features:
-            hierarchies[key] = features[key]["hierarchy"]
-            continue
-        hierarchies[key] = run_json(
-            ["feature", "get", key, "--snapshot", args.snapshot], args.data_dir
-        )["hierarchy"]
+    missing_hierarchy_keys = [key for key in dated_keys if key not in features]
+    missing_hierarchies = run_json_many([
+        ["feature", "get", key, "--snapshot", args.snapshot]
+        for key in missing_hierarchy_keys
+    ], args.data_dir)
+    hierarchies = {
+        key: features[key]["hierarchy"] for key in dated_keys if key in features
+    }
+    hierarchies.update({
+        key: payload["hierarchy"]
+        for key, payload in zip(missing_hierarchy_keys, missing_hierarchies, strict=True)
+    })
     team_completion = {
         name: completion_by_target_date(detail, hierarchies)
         for name, detail in team_details.items()

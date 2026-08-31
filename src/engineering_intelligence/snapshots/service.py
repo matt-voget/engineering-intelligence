@@ -123,6 +123,39 @@ class SnapshotService:
             session.expunge(snapshot)
             return snapshot
 
+    def resolve_compatible(
+        self,
+        identifier: str,
+        *,
+        source_config_hash: str,
+        organization_config_hash: str,
+        ingestion_run_ids: set[str],
+    ) -> Snapshot:
+        with self.sessions() as session:
+            snapshot = session.get(Snapshot, identifier)
+            if snapshot is None:
+                snapshot = session.scalar(select(Snapshot).where(Snapshot.name == identifier))
+            if snapshot is None:
+                raise ValueError(f"Snapshot not found: {identifier}")
+            pinned_run_ids = set(
+                session.scalars(
+                    select(SnapshotSourceState.ingestion_run_id).where(
+                        SnapshotSourceState.snapshot_id == snapshot.id
+                    )
+                )
+            )
+            pinned_run_ids.discard(None)
+            if (
+                snapshot.source_config_hash != source_config_hash
+                or snapshot.organization_config_hash != organization_config_hash
+                or pinned_run_ids != ingestion_run_ids
+            ):
+                raise ValueError(
+                    f"Existing snapshot is not compatible with refresh run: {identifier}"
+                )
+            session.expunge(snapshot)
+            return snapshot
+
     @staticmethod
     def _latest_successful_run(session: Session, board_id: int) -> IngestionRun:
         run = session.scalar(

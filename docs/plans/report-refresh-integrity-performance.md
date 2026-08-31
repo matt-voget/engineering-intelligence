@@ -49,16 +49,18 @@ duplicated and unnecessarily serial snapshot queries.
 
 ## Checkpoints
 
-1. **In progress:** Add regression tests for reused receipt entries and post-snapshot
-   resume.
-2. Implement idempotent snapshot adoption and complete receipt assembly.
-3. Profile renderer call planning; remove duplicate queries and add bounded concurrent
-   cache materialization.
-4. Verify targeted and full tests; record timing evidence.
+1. **Completed 2026-08-31:** Added regression tests for reused receipt entries and
+   post-snapshot resume.
+2. **Completed 2026-08-31:** Persisted source receipt payloads and snapshot identity;
+   resume now assembles complete receipts and adopts only provenance-compatible
+   snapshots.
+3. **Completed 2026-08-31:** Removed duplicate team-work queries and added deterministic
+   three-worker materialization for independent team, feature, and individual views.
+4. **In progress:** Verify targeted and full tests; record timing evidence.
 5. Run one fresh live refresh, render from its pinned snapshot, validate, and deliver
    the report.
 
 ## Exact next action
 
-Inspect refresh orchestration, snapshot persistence, receipt assembly, and renderer
-cache planning, then add failing regression tests before implementation.
+Run the full repository verification suite, validate cached output equivalence, and
+commit the implementation checkpoint before a fresh live benchmark/report run.
