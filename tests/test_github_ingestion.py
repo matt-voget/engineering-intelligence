@@ -385,3 +385,12 @@ def test_github_ingestion_is_idempotent_and_links_explicit_jira_keys(
     assert [person.person_id for person in people.people] == ["alex", "jordan"]
     assert people.people[0].current_features == ["IDN-1"]
     assert "People directory" in render_people_markdown(people)
+
+    identity_directory = PeopleQuery(sessions).get(
+        "github-attribution",
+        include_work_context=False,
+    )
+    assert [person.person_id for person in identity_directory.people] == ["alex", "jordan"]
+    assert identity_directory.people[0].current_features == []
+    assert identity_directory.people[0].active_context == []
+    assert identity_directory.people[0].identity_mapping_state == "complete"

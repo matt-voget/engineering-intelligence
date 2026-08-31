@@ -1667,7 +1667,9 @@ def main() -> None:
     ], args.data_dir)
     team_rows = {row["team_name"]: row for row in dashboard["teams"]}
     report_teams = [name for name in team_rows if name.casefold() != "no team"]
-    people_directory = run_json(["people", "list", "--snapshot", args.snapshot], args.data_dir)
+    people_directory = run_json([
+        "people", "list", "--snapshot", args.snapshot, "--identity-only"
+    ], args.data_dir)
     directory_rows = people_directory.get("people", [])
     team_members = {
         name: [row["display_name"] for row in directory_rows if name in row.get("current_teams", [])]

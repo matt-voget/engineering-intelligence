@@ -999,6 +999,13 @@ def people_list(
         str,
         typer.Option("--format", help="Output format: json or markdown."),
     ] = "json",
+    identity_only: Annotated[
+        bool,
+        typer.Option(
+            "--identity-only",
+            help="Return pinned roster, memberships, and identities without work context.",
+        ),
+    ] = False,
     data_dir: DataDir = None,
 ) -> None:
     """Render the configured People directory and current work context."""
@@ -1007,7 +1014,10 @@ def people_list(
     paths = runtime_paths(data_dir)
     upgrade_database(paths.database)
     sessions = session_factory(create_sqlite_engine(paths.database))
-    directory = PeopleQuery(sessions).get(snapshot)
+    directory = PeopleQuery(sessions).get(
+        snapshot,
+        include_work_context=not identity_only,
+    )
     typer.echo(
         directory.model_dump_json(indent=2)
         if output_format == "json"

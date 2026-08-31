@@ -1,6 +1,6 @@
 # Report refresh integrity and performance plan
 
-**Status:** Approved — implementation in progress
+**Status:** Completed
 **Owner:** titan
 **Started:** 2026-08-31
 **Approved:** 2026-08-31 by Matt Voget
@@ -58,11 +58,22 @@ duplicated and unnecessarily serial snapshot queries.
    three-worker materialization for independent team, feature, and individual views.
    Refresh-side individual cache materialization now uses the same bounded concurrency
    instead of serially computing all 16 people.
-4. **In progress:** Verify targeted and full tests; record timing evidence.
-5. Run one fresh live refresh, render from its pinned snapshot, validate, and deliver
-   the report.
+4. **Completed 2026-08-31:** Added an identity-only people directory path so report
+   rendering does not recompute every person's complete work context before the
+   individual views are materialized. Full-context refresh materialization remains
+   bounded to three workers.
+5. **Completed 2026-08-31:** Verified 135 tests, Ruff, whitespace checks, and the
+   packaged skill validator. Fresh run `3baa0b0d-a684-4fd6-955f-af95321b10ea`
+   completed all 346 sources (9 Jira and 337 GitHub) and pinned snapshot
+   `375a27c1-dc08-4386-b3cc-f1cde79f67b5`.
+6. **Completed 2026-08-31:** The pre-optimization fresh refresh baseline was 752.709
+   seconds: source ingestion finished in 199.644 seconds and the serial individual
+   finalizer consumed roughly 533 seconds. The optimized cold report render completed
+   in 1,311 seconds, down from roughly 49 minutes, and a cache-only rerender completed
+   in 4 seconds. The delivered self-contained artifact is 17,083,765 bytes and contains
+   seven team sections, sixteen individual sections, and both evidence finders.
 
 ## Exact next action
 
-Run the full repository verification suite, validate cached output equivalence, and
-commit the implementation checkpoint before a fresh live benchmark/report run.
+Deliver the validated report and use the next fresh refresh to measure the new
+concurrent individual-finalizer timing against the 533-second serial baseline.

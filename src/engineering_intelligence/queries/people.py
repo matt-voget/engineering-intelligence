@@ -1,5 +1,7 @@
 """Build the People directory from persisted identities and Individual contracts."""
 
+from concurrent.futures import ThreadPoolExecutor
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -11,6 +13,8 @@ from engineering_intelligence.presentations.people import (
     PersonDirectoryRow,
 )
 from engineering_intelligence.queries.individual import IndividualQuery, _as_utc
+
+PEOPLE_QUERY_WORKERS = 3
 
 
 class PeopleQuery:
@@ -28,7 +32,12 @@ class PeopleQuery:
             max_feature_nodes=max_feature_nodes,
         )
 
-    def get(self, snapshot_identifier: str) -> PeopleDirectory:
+    def get(
+        self,
+        snapshot_identifier: str,
+        *,
+        include_work_context: bool = True,
+    ) -> PeopleDirectory:
         with self.sessions() as session:
             snapshot = _snapshot(session, snapshot_identifier)
             saved_config = (
@@ -64,48 +73,82 @@ class PeopleQuery:
             ).all()
         if len(people) > self.max_people:
             raise ValueError(f"People directory exceeds the {self.max_people}-person limit")
-        rows = []
-        individual_query = (
-            IndividualQuery(
-                self.sessions,
-                max_feature_nodes=self.individual_query.feature_query.max_nodes,
-                teams_config=saved_config,
-            )
-            if saved_config is not None
-            else self.individual_query
-        )
-        for person in people:
-            individual = individual_query.get(snapshot_identifier, person.id)
-            active_work = [item for item in individual.jira_work if item.active]
-            rows.append(
-                PersonDirectoryRow(
+        def person_row(person: Person) -> PersonDirectoryRow:
+            if not include_work_context:
+                current_teams = []
+                if saved_config is not None:
+                    current_teams = [
+                        team.name
+                        for team in saved_config.teams
+                        for member in team.members
+                        if member.id == person.id
+                        and member.active
+                        and member.starts_on <= snapshot.created_at.date()
+                        and (
+                            member.ends_on is None
+                            or member.ends_on >= snapshot.created_at.date()
+                        )
+                    ]
+                return PersonDirectoryRow(
                     person_id=person.id,
                     display_name=person.display_name,
                     preferred_name=person.preferred_name,
                     role=person.role,
-                    current_teams=[
-                        membership.team_name
-                        for membership in individual.memberships
-                        if membership.current_at_snapshot
-                    ],
-                    current_features=sorted(
-                        {
-                            item.feature_key
-                            for item in active_work
-                            if item.feature_key is not None
-                        }
+                    current_teams=current_teams,
+                    current_features=[],
+                    active_context=[],
+                    identity_mapping_state=(
+                        "complete"
+                        if person.jira_account_id and person.github_login
+                        else "partial"
+                        if person.jira_account_id or person.github_login
+                        else "unmapped"
                     ),
-                    active_context=sorted(
-                        {
-                            f"{item.direct_issue_key}: {item.direct_issue_title}"
-                            for item in active_work
-                        }
-                    ),
-                    identity_mapping_state=individual.identity_mapping_state,
                     jira_account_id=person.jira_account_id,
                     github_login=person.github_login,
                 )
+            individual = IndividualQuery(
+                self.sessions,
+                max_feature_nodes=self.individual_query.feature_query.max_nodes,
+                teams_config=saved_config,
+            ).get(snapshot_identifier, person.id)
+            active_work = [item for item in individual.jira_work if item.active]
+            return PersonDirectoryRow(
+                person_id=person.id,
+                display_name=person.display_name,
+                preferred_name=person.preferred_name,
+                role=person.role,
+                current_teams=[
+                    membership.team_name
+                    for membership in individual.memberships
+                    if membership.current_at_snapshot
+                ],
+                current_features=sorted(
+                    {
+                        item.feature_key
+                        for item in active_work
+                        if item.feature_key is not None
+                    }
+                ),
+                active_context=sorted(
+                    {
+                        f"{item.direct_issue_key}: {item.direct_issue_title}"
+                        for item in active_work
+                    }
+                ),
+                identity_mapping_state=individual.identity_mapping_state,
+                jira_account_id=person.jira_account_id,
+                github_login=person.github_login,
             )
+
+        if include_work_context:
+            with ThreadPoolExecutor(
+                max_workers=min(PEOPLE_QUERY_WORKERS, len(people) or 1),
+                thread_name_prefix="people-query",
+            ) as executor:
+                rows = list(executor.map(person_row, people))
+        else:
+            rows = [person_row(person) for person in people]
         notes = []
         if not rows:
             notes.append(
