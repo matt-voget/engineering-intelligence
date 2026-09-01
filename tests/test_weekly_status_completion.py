@@ -210,6 +210,48 @@ def test_reusable_weekly_chart_is_wired_to_filtered_cycle_records(generator):
     assert "function weeklyAverage(records,dateOf,valueOf)" in generator.JS
     assert "function renderWeeklyAverageChart(container,records,options)" in generator.JS
     assert "renderWeeklyAverageChart(group.querySelector('.weekly-chart-canvas'),included" in generator.JS
+    assert "unit:'calendar days'" in generator.JS
+
+
+def test_github_metric_charts_share_canonical_pr_payloads(generator):
+    html = generator.github_pr_metrics_section(
+        {
+            "repositories": ["example/repository"],
+            "author_logins": ["engineer"],
+            "contributions": [
+                {
+                    "repository": "example/repository",
+                    "number": 42,
+                    "title": "Reduce latency",
+                    "url": "https://github.example/example/repository/pull/42",
+                    "author": {"login": "engineer", "display_name": "Engineer"},
+                    "reviewers": [],
+                    "created_at": "2026-08-24T00:00:00Z",
+                    "first_reviewed_at": "2026-08-25T00:00:00Z",
+                    "merged_at": "2026-08-27T00:00:00Z",
+                    "pickup_hours": 24.0,
+                    "review_hours": 48.0,
+                    "pickup_rag": None,
+                    "review_rag": None,
+                }
+            ],
+            "data_quality_notes": [],
+        }
+    )
+
+    assert html.count('class="pr-metric-records"') == 2
+    assert html.count('data-pr-key="example/repository#42"') == 2
+    assert '[["example/repository#42","2026-08-27T00:00:00Z",24.0]]' in html
+    assert '[["example/repository#42","2026-08-27T00:00:00Z",48.0]]' in html
+    assert "Weekly average pickup time" in html
+    assert "Weekly average review time" in html
+
+
+def test_reusable_weekly_chart_is_wired_to_filtered_pr_records(generator):
+    assert "group.querySelector('.pr-metric-records')" in generator.JS
+    assert "date:record=>record.merged" in generator.JS
+    assert "value:record=>record.hours" in generator.JS
+    assert "unit:'hours'" in generator.JS
 
 
 def test_done_column_is_the_numerator_per_month(generator):

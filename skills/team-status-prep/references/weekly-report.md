@@ -80,7 +80,9 @@ Create exactly one self-contained HTML single-page app with embedded CSS and Jav
   population includes a reusable inline weekly-average chart. Bucket issues by the UTC
   Monday of their Done-transition week, show sample size for every point, and update
   the chart, summary, and contributor table together when that population's local
-  Done-date filter changes.
+  Done-date filter changes. Each GitHub PR metric population likewise includes a
+  weekly-average chart for pickup or review hours, bucketed by UTC Monday of merge
+  week; its chart, summary, and contributor table share the local merge-date filter.
 - `#/people/PERSON` shows neutral work context, current memberships, Jira relationships,
   delivery evidence, deterministic signals, and team links.
 
