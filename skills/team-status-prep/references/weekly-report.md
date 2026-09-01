@@ -42,6 +42,10 @@ snapshot materializes these views once; subsequent template or presentation chan
 must render from them without API calls or repeated analytical queries. Writes must be
 atomic, interrupted materialization must resume from completed entries, and corrupt or
 mismatched entries must fail loudly instead of being silently ignored.
+Assemble those deterministic views into one snapshot-pinned report data model before
+presentation. Tables, summaries, charts, and filters must consume that model;
+presentation components must never issue their own queries or independently redefine
+the record population.
 
 Create exactly one self-contained HTML single-page app with embedded CSS and JavaScript:
 
@@ -72,7 +76,11 @@ Create exactly one self-contained HTML single-page app with embedded CSS and Jav
   evidence, GitHub PR pickup/review time across all configured repositories scoped by
   team-member author identity with contributor and participant evidence, and member
   links. Team Health includes a red/amber/green index whose links open the owning
-  section and jump to the exact assessed issue or pull request.
+  section and jump to the exact assessed issue or pull request. Each Build Cycle Time
+  population includes a reusable inline weekly-average chart. Bucket issues by the UTC
+  Monday of their Done-transition week, show sample size for every point, and update
+  the chart, summary, and contributor table together when that population's local
+  Done-date filter changes.
 - `#/people/PERSON` shows neutral work context, current memberships, Jira relationships,
   delivery evidence, deterministic signals, and team links.
 

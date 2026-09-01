@@ -140,6 +140,78 @@ def test_page_includes_snapshot_provenance(generator, monkeypatch):
     assert "Snapshot 181106e0-3dde-4150-a467-2b4d0e326709" in html
 
 
+def test_report_model_reuses_the_same_snapshot_pinned_views(generator):
+    dashboard = {"snapshot_id": "snapshot-1"}
+    people = [{"person_id": "person-1"}]
+    metrics = {"Team": {"metric": "value"}}
+    build_cycle = {"Team": {"groups": []}}
+    github = {"Team": {"contributions": []}}
+    details = {"Team": {"workflow": []}}
+    work = {"Team": {"jira_issues": []}}
+    completion = {"Team": {"months": {}}}
+
+    model = generator.assemble_report_model(
+        snapshot_id="snapshot-1",
+        dashboard=dashboard,
+        people=people,
+        team_names=["Team"],
+        metrics=metrics,
+        build_cycle=build_cycle,
+        github_pr_metrics=github,
+        details=details,
+        work=work,
+        completion=completion,
+    )
+
+    assert model["dashboard"] is dashboard
+    assert model["people"] is people
+    assert model["teams"]["Team"]["build_cycle"] is build_cycle["Team"]
+    assert model["teams"]["Team"]["work"] is work["Team"]
+
+
+def test_build_cycle_chart_and_table_share_one_canonical_record_payload(generator):
+    html = generator.build_cycle_time_section(
+        {
+            "groups": [
+                {
+                    "classification": "ibr_linked",
+                    "contributions": [
+                        {
+                            "jira_key": "ENG-1",
+                            "title": "Deliver reusable chart",
+                            "url": "https://jira.example/ENG-1",
+                            "issue_type": "Epic",
+                            "cycle_days": 6.0,
+                            "period_started_at": "2026-08-24T00:00:00Z",
+                            "period_ended_at": "2026-08-31T00:00:00Z",
+                            "top_status": "In Progress",
+                            "status_durations": [
+                                {"status": "In Progress", "days": 6.0}
+                            ],
+                            "children": [],
+                            "rag": None,
+                        }
+                    ],
+                },
+                {"classification": "non_ibr", "contributions": []},
+            ],
+            "data_quality_notes": [],
+        }
+    )
+
+    assert 'data-cycle-key="ENG-1"' in html
+    assert 'class="cycle-records"' in html
+    assert '[["ENG-1","2026-08-31T00:00:00Z",6.0,{"In Progress":6.0}]]' in html
+    assert "Weekly average cycle time" in html
+    assert "Grouped by the UTC Monday" in html
+
+
+def test_reusable_weekly_chart_is_wired_to_filtered_cycle_records(generator):
+    assert "function weeklyAverage(records,dateOf,valueOf)" in generator.JS
+    assert "function renderWeeklyAverageChart(container,records,options)" in generator.JS
+    assert "renderWeeklyAverageChart(group.querySelector('.weekly-chart-canvas'),included" in generator.JS
+
+
 def test_done_column_is_the_numerator_per_month(generator):
     result = generator.completion_by_target_date(
         team(

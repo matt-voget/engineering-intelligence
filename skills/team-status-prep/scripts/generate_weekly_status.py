@@ -88,6 +88,38 @@ def configure_query_cache(
     _query_cache_stats.update(hits=0, misses=0)
 
 
+def assemble_report_model(
+    *,
+    snapshot_id: str,
+    dashboard: dict,
+    people: list[dict],
+    team_names: list[str],
+    metrics: dict[str, dict],
+    build_cycle: dict[str, dict],
+    github_pr_metrics: dict[str, dict],
+    details: dict[str, dict],
+    work: dict[str, dict],
+    completion: dict[str, dict],
+) -> dict:
+    """Assemble the one snapshot-pinned data layer consumed by report components."""
+    return {
+        "snapshot_id": snapshot_id,
+        "dashboard": dashboard,
+        "people": people,
+        "teams": {
+            name: {
+                "metrics": metrics[name],
+                "build_cycle": build_cycle[name],
+                "github_pr_metrics": github_pr_metrics[name],
+                "details": details[name],
+                "work": work[name],
+                "completion": completion[name],
+            }
+            for name in team_names
+        },
+    }
+
+
 def _query_cache_path(args: list[str]) -> Path | None:
     if _query_cache_dir is None:
         return None
@@ -1110,9 +1142,6 @@ def build_cycle_time_section(view: dict | None) -> str:
     if not view:
         return '<p class="empty">Build Cycle Time is unavailable for this team.</p>'
 
-    def status_data(durations: list[dict]) -> str:
-        return esc(json.dumps({item["status"]: item["days"] for item in durations}))
-
     def child_rows(children: list[dict]) -> str:
         return "".join(
             f'''<tr class="cycle-child"><td style="padding-left:{16 + child.get('depth', 1) * 14}px">↳ {link(child.get("url"), child.get("jira_key"))}</td>
@@ -1130,8 +1159,18 @@ def build_cycle_time_section(view: dict | None) -> str:
             {"contributions": []},
         )
         contributions = group.get("contributions", [])
+        chart_records = [
+            [
+                item["jira_key"],
+                item.get("period_ended_at"),
+                item["cycle_days"],
+                {duration["status"]: duration["days"] for duration in item.get("status_durations", [])},
+            ]
+            for item in contributions
+        ]
+        chart_payload = json.dumps(chart_records, separators=(",", ":")).replace("</", "<\\/")
         rows = "".join(
-            f'''<tbody{rag_anchor_attr(item.get("rag"))} class="cycle-contribution rag-instance" data-cycle-ended="{date_attr(item.get('period_ended_at'))}" data-cycle-days="{item['cycle_days']}" data-status-durations="{status_data(item.get('status_durations', []))}">
+            f'''<tbody{rag_anchor_attr(item.get("rag"))} class="cycle-contribution rag-instance" data-cycle-key="{esc(item['jira_key'])}">
             <tr class="cycle-parent"><td>{rag_badge(item.get("rag"))} {link(item.get("url"), item.get("jira_key"))}</td>
             <td>{esc(item.get("issue_type") or "Unknown")}</td>
             <td class="num"><strong>{item['cycle_days']:.2f} days</strong></td>
@@ -1142,8 +1181,10 @@ def build_cycle_time_section(view: dict | None) -> str:
         ) or '<tbody><tr><td colspan="6" class="empty">No qualifying completed issues.</td></tr></tbody>'
         return f'''<section class="cycle-group date-scope" data-cycle-group="{classification}"><h3>{esc(heading)}</h3>
         <div class="cycle-summary"><div class="metric"><strong class="cycle-average">—</strong>average calendar days</div><div class="metric"><strong class="cycle-sample">0</strong>qualifying issues</div><div class="metric"><strong class="cycle-top-status">—</strong>top contributing status</div></div>
+        <figure class="weekly-chart" data-weekly-chart><figcaption><strong>Weekly average cycle time</strong><span>Grouped by the UTC Monday of each Done transition. Point labels show sample size.</span></figcaption><div class="weekly-chart-canvas" role="img" aria-label="Weekly average cycle time chart"></div></figure>
         <p class="table-note">Top five contributors to the average for the selected Done-date range. Child rows show their own In Progress-to-Done cycle where complete transition evidence exists.</p>
-        <div class="table-wrap"><table class="cycle-table"><thead><tr><th>Issue</th><th>Type</th><th class="num">Cycle time</th><th>Started → Done</th><th>Top status</th><th>Title</th></tr></thead>{rows}</table></div></section>'''
+        <div class="table-wrap"><table class="cycle-table"><thead><tr><th>Issue</th><th>Type</th><th class="num">Cycle time</th><th>Started → Done</th><th>Top status</th><th>Title</th></tr></thead>{rows}</table></div>
+        <script type="application/json" class="cycle-records">{chart_payload}</script></section>'''
 
     notes = "".join(f'<li>{esc(note)}</li>' for note in view.get("data_quality_notes", []))
     return (
@@ -1552,7 +1593,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .breakdown .month-row th{background:#e8eefb;color:#26355c;font-size:13px;padding:8px 10px}.breakdown .parent-row td{border-top:1px solid #e7eaf1}.child-row td{background:#fafbfe;font-size:12px;padding:6px 10px}.child-row .child-key{padding-left:26px}.collapsed{display:none}
 /* Keys, badges and controls never wrap; the title column absorbs the slack. */
 .breakdown td:first-child,.breakdown th:first-child{white-space:nowrap}.breakdown td:nth-child(2){width:99%}.badge,.toggle{white-space:nowrap}
-.toggle{font:inherit;font-size:12px;color:#315bd6;background:#eef2fc;border:1px solid #d3ddf4;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle:hover{background:#e2e9f9}.toggle[aria-expanded="true"]{background:#dbe4f8}.cycle-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:10px 0}.cycle-summary .metric{padding:12px}.cycle-summary .metric strong{font-size:22px}.cycle-group{margin:22px 0}.cycle-child td{background:#fafbfe;font-size:12px}.top-status{background:#e7ddff;color:#57359a}.cycle-excluded{display:none}.cycle-excluded.focused{display:table-row-group}.rag-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:5px;font-size:12px;font-weight:700;white-space:nowrap}.rag-red{background:#ffe3e1;color:#982d28;border:1px solid #e9aaa5}.rag-amber{background:#fff0c4;color:#745100;border:1px solid #e5c66c}.rag-green{background:#dff6e8;color:#17633b;border:1px solid #96d5af}.rag-summary ul{columns:2;padding-left:22px}.rag-summary li{break-inside:avoid;margin:6px 0}.rag-instance:target,.rag-instance.focused{outline:3px solid #315bd6;outline-offset:-2px;scroll-margin-top:90px}.landing-header{margin:20px 0 28px}.landing-header h1{margin:5px 0}.landing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.landing-section{position:relative;background:white;border:1px solid #dfe4ef;border-radius:14px;padding:24px;box-shadow:0 3px 12px #26334d10;min-height:190px}.landing-section h2{font-size:24px;margin:4px 0}.landing-section p{color:#667087;margin:0 0 18px}.landing-number{color:#8792aa;font-size:12px;font-weight:700;letter-spacing:.1em}.directory-links{display:flex;flex-wrap:wrap;gap:8px}.directory-link,.finder-link{display:inline-flex;align-items:center;padding:8px 11px;border-radius:8px;background:#edf1fb;text-decoration:none;font-weight:600}.directory-link:hover,.finder-link:hover{background:#dfe7fa}.finder-link{margin-top:8px}.finder-stub{max-width:720px;margin:60px auto;text-align:center;padding:50px}.finder-filters{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:14px 0}.finder-filters label{display:grid;gap:4px;color:#667087;font-size:12px}.finder-filters select{font:inherit;min-width:170px;padding:7px 9px;border:1px solid #bcc6dc;border-radius:7px;background:white}.finder-count{color:#52596b;font-size:13px;margin-left:auto}.facet-hidden{display:none!important}.column-manager,.threshold-manager{background:#f8faff;border:1px solid #dfe4ef;border-radius:10px;padding:10px 12px;margin:12px 0}.column-manager>summary,.threshold-manager>summary{color:#315bd6}.column-manager-visible{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.column-item{display:inline-flex;align-items:center;gap:3px;background:white;border:1px solid #dfe4ef;border-radius:8px;padding:4px 5px 4px 9px}.column-item strong{font-size:12px}.column-item button{border:0;background:#edf1fb;color:#315bd6;border-radius:5px;cursor:pointer;padding:2px 6px}.column-item button:disabled{color:#9ba4b7;cursor:not-allowed}.column-add{display:flex;align-items:end;gap:7px}.column-add label{display:grid;gap:3px;color:#667087;font-size:12px}.column-add select{font:inherit;padding:6px 8px;border:1px solid #bcc6dc;border-radius:7px;background:white}.column-hidden{display:none!important}.threshold-grid{display:grid;grid-template-columns:minmax(180px,1fr) 130px 130px;gap:7px;align-items:center;max-width:520px;margin:10px 0}.threshold-grid input{font:inherit;padding:6px 8px;border:1px solid #bcc6dc;border-radius:7px;min-width:0}.threshold-actions{display:flex;align-items:center;gap:10px}.cell-red{background:#ffe3e1!important;color:#982d28;font-weight:700}.cell-amber{background:#fff0c4!important;color:#745100;font-weight:700}.cell-red::before{content:"● ";color:#b42318}.cell-amber::before{content:"▲ ";color:#9a6700}.quality-missing{background:repeating-linear-gradient(135deg,#f2f4f8,#f2f4f8 5px,#e5e9f1 5px,#e5e9f1 10px)!important;color:#52596b}.quality-missing::before{content:"⚠ ";color:#596579}.attention-hidden{display:none!important}@media(max-width:650px){nav{padding:8px 16px}.generated{max-width:150px}.card header,.team-card header{display:block}.team-card{padding:15px}.landing-grid{grid-template-columns:1fr}.landing-section{min-height:0}th,td{min-width:110px}th:last-child,td:last-child{min-width:220px}.rag-summary ul{columns:1}.finder-count{width:100%;margin-left:0}.threshold-grid{grid-template-columns:minmax(130px,1fr) 90px 90px}}'''
+.toggle{font:inherit;font-size:12px;color:#315bd6;background:#eef2fc;border:1px solid #d3ddf4;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle:hover{background:#e2e9f9}.toggle[aria-expanded="true"]{background:#dbe4f8}.cycle-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:10px 0}.cycle-summary .metric{padding:12px}.cycle-summary .metric strong{font-size:22px}.cycle-group{margin:22px 0}.cycle-child td{background:#fafbfe;font-size:12px}.top-status{background:#e7ddff;color:#57359a}.cycle-excluded{display:none}.cycle-excluded.focused{display:table-row-group}.weekly-chart{margin:14px 0;padding:14px;border:1px solid #dfe4ef;border-radius:10px;background:#fbfcff}.weekly-chart figcaption{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.weekly-chart figcaption span{color:#667087;font-size:12px}.weekly-chart-canvas{min-height:230px;margin-top:8px}.weekly-chart svg{display:block;width:100%;height:auto;overflow:visible}.chart-grid{stroke:#dfe4ef;stroke-width:1}.chart-axis{fill:#667087;font-size:11px}.chart-line{fill:none;stroke:#315bd6;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}.chart-point{fill:#fff;stroke:#315bd6;stroke-width:3}.chart-label{fill:#26355c;font-size:11px;font-weight:600}.chart-empty{display:grid;place-items:center;min-height:210px;color:#667087;font-style:italic}.rag-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:5px;font-size:12px;font-weight:700;white-space:nowrap}.rag-red{background:#ffe3e1;color:#982d28;border:1px solid #e9aaa5}.rag-amber{background:#fff0c4;color:#745100;border:1px solid #e5c66c}.rag-green{background:#dff6e8;color:#17633b;border:1px solid #96d5af}.rag-summary ul{columns:2;padding-left:22px}.rag-summary li{break-inside:avoid;margin:6px 0}.rag-instance:target,.rag-instance.focused{outline:3px solid #315bd6;outline-offset:-2px;scroll-margin-top:90px}.landing-header{margin:20px 0 28px}.landing-header h1{margin:5px 0}.landing-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.landing-section{position:relative;background:white;border:1px solid #dfe4ef;border-radius:14px;padding:24px;box-shadow:0 3px 12px #26334d10;min-height:190px}.landing-section h2{font-size:24px;margin:4px 0}.landing-section p{color:#667087;margin:0 0 18px}.landing-number{color:#8792aa;font-size:12px;font-weight:700;letter-spacing:.1em}.directory-links{display:flex;flex-wrap:wrap;gap:8px}.directory-link,.finder-link{display:inline-flex;align-items:center;padding:8px 11px;border-radius:8px;background:#edf1fb;text-decoration:none;font-weight:600}.directory-link:hover,.finder-link:hover{background:#dfe7fa}.finder-link{margin-top:8px}.finder-stub{max-width:720px;margin:60px auto;text-align:center;padding:50px}.finder-filters{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:14px 0}.finder-filters label{display:grid;gap:4px;color:#667087;font-size:12px}.finder-filters select{font:inherit;min-width:170px;padding:7px 9px;border:1px solid #bcc6dc;border-radius:7px;background:white}.finder-count{color:#52596b;font-size:13px;margin-left:auto}.facet-hidden{display:none!important}.column-manager,.threshold-manager{background:#f8faff;border:1px solid #dfe4ef;border-radius:10px;padding:10px 12px;margin:12px 0}.column-manager>summary,.threshold-manager>summary{color:#315bd6}.column-manager-visible{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.column-item{display:inline-flex;align-items:center;gap:3px;background:white;border:1px solid #dfe4ef;border-radius:8px;padding:4px 5px 4px 9px}.column-item strong{font-size:12px}.column-item button{border:0;background:#edf1fb;color:#315bd6;border-radius:5px;cursor:pointer;padding:2px 6px}.column-item button:disabled{color:#9ba4b7;cursor:not-allowed}.column-add{display:flex;align-items:end;gap:7px}.column-add label{display:grid;gap:3px;color:#667087;font-size:12px}.column-add select{font:inherit;padding:6px 8px;border:1px solid #bcc6dc;border-radius:7px;background:white}.column-hidden{display:none!important}.threshold-grid{display:grid;grid-template-columns:minmax(180px,1fr) 130px 130px;gap:7px;align-items:center;max-width:520px;margin:10px 0}.threshold-grid input{font:inherit;padding:6px 8px;border:1px solid #bcc6dc;border-radius:7px;min-width:0}.threshold-actions{display:flex;align-items:center;gap:10px}.cell-red{background:#ffe3e1!important;color:#982d28;font-weight:700}.cell-amber{background:#fff0c4!important;color:#745100;font-weight:700}.cell-red::before{content:"● ";color:#b42318}.cell-amber::before{content:"▲ ";color:#9a6700}.quality-missing{background:repeating-linear-gradient(135deg,#f2f4f8,#f2f4f8 5px,#e5e9f1 5px,#e5e9f1 10px)!important;color:#52596b}.quality-missing::before{content:"⚠ ";color:#596579}.attention-hidden{display:none!important}@media(max-width:650px){nav{padding:8px 16px}.generated{max-width:150px}.card header,.team-card header{display:block}.team-card{padding:15px}.landing-grid{grid-template-columns:1fr}.landing-section{min-height:0}th,td{min-width:110px}th:last-child,td:last-child{min-width:220px}.rag-summary ul{columns:1}.finder-count{width:100%;margin-left:0}.threshold-grid{grid-template-columns:minmax(130px,1fr) 90px 90px}}'''
 JS = '''function route(){const raw=location.hash.startsWith('#/')?location.hash.slice(1):'/';const [path,query='']=raw.split('?');const params=new URLSearchParams(query);const views=[...document.querySelectorAll('.app-view')];const view=views.find(v=>v.dataset.route===path)||views.find(v=>v.dataset.route==='/');views.forEach(v=>v.classList.toggle('active',v===view));document.title=(view.dataset.title?view.dataset.title+' — ':'')+'Engineering Intelligence';document.querySelectorAll('.rag-instance.focused').forEach(e=>e.classList.remove('focused'));const focus=params.get('focus');if(focus){const target=document.getElementById(focus);if(target){const details=target.closest('details');if(details)details.open=true;target.classList.add('focused');requestAnimationFrame(()=>target.scrollIntoView({block:'center'}));return}}window.scrollTo(0,0)}
 window.addEventListener('hashchange',route);route();
 document.querySelectorAll('.status-filter-group').forEach(group=>{const scope=group.closest('details')||document;
@@ -1577,8 +1618,10 @@ const c=(x!==''&&y!==''&&!isNaN(nx)&&!isNaN(ny))?nx-ny:x.localeCompare(y,undefin
 return dir==='asc'?c:-c});
 data.concat(rest).forEach(r=>body.appendChild(r));});});});document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{const f=b.dataset.filter,scope=b.closest('.app-view')||document;scope.querySelectorAll('[data-status]').forEach(e=>e.classList.toggle('hidden',f!=='all'&&e.dataset.status!==f));});
 function dateControls(){const box=document.createElement('div');box.className='date-controls';box.innerHTML='<strong>Table dates</strong><label>From <input type="date" data-date-from></label><label>To <input type="date" data-date-to></label><button class="toggle" type="button" data-date-clear>Clear</button><span class="date-note"></span>';return box;}
-function bindDateScope(scope,targets,dateValue,after){const controls=dateControls(),anchor=scope.querySelector('.table-wrap')||scope;anchor.parentNode.insertBefore(controls,anchor);const from=controls.querySelector('[data-date-from]'),to=controls.querySelector('[data-date-to]'),note=controls.querySelector('.date-note');function applyDates(){const first=from.value,last=to.value,active=Boolean(first||last);let undated=0;const included=[];targets().forEach(row=>{const d=dateValue(row);let hide=false;if(active){if(!d){hide=true;undated++;}else hide=Boolean((first&&d<first)||(last&&d>last));}row.classList.toggle('date-hidden',hide);if(!hide)included.push(row);});if(after)after(included,targets());note.textContent=active?(undated?undated+' undated rows hidden':'Filter active'):'';}from.addEventListener('change',applyDates);to.addEventListener('change',applyDates);controls.querySelector('[data-date-clear]').addEventListener('click',()=>{from.value='';to.value='';applyDates();});applyDates();}
-document.querySelectorAll('.cycle-group').forEach(group=>bindDateScope(group,()=>[...group.querySelectorAll('.cycle-contribution')],row=>row.dataset.cycleEnded,(included,all)=>{const ranked=[...included].sort((a,b)=>Number(b.dataset.cycleDays)-Number(a.dataset.cycleDays));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.cycleDays),0),statuses={};included.forEach(row=>{const values=JSON.parse(row.dataset.statusDurations||'{}');Object.entries(values).forEach(([status,days])=>statuses[status]=(statuses[status]||0)+Number(days));});const top=Object.entries(statuses).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))[0];group.querySelector('.cycle-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.cycle-sample').textContent=String(included.length);group.querySelector('.cycle-top-status').textContent=top?top[0]+' ('+top[1].toFixed(2)+'d)':'—';}));
+function bindDateScope(scope,targets,dateValue,after){const controls=dateControls(),anchor=scope.querySelector('.table-wrap')||scope;anchor.parentNode.insertBefore(controls,anchor);const from=controls.querySelector('[data-date-from]'),to=controls.querySelector('[data-date-to]'),note=controls.querySelector('.date-note');function applyDates(){const first=from.value,last=to.value,active=Boolean(first||last);let undated=0;const included=[];targets().forEach(row=>{const d=dateValue(row);let hide=false;if(active){if(!d){hide=true;undated++;}else hide=Boolean((first&&d<first)||(last&&d>last));}const element=row.element||row;if(element.classList)element.classList.toggle('date-hidden',hide);if(!hide)included.push(row);});if(after)after(included,targets());note.textContent=active?(undated?undated+' undated rows hidden':'Filter active'):'';}from.addEventListener('change',applyDates);to.addEventListener('change',applyDates);controls.querySelector('[data-date-clear]').addEventListener('click',()=>{from.value='';to.value='';applyDates();});applyDates();}
+function weeklyAverage(records,dateOf,valueOf){const weeks=new Map();records.forEach(record=>{const raw=dateOf(record);if(!raw)return;const date=new Date(raw.slice(0,10)+'T00:00:00Z'),day=(date.getUTCDay()+6)%7;date.setUTCDate(date.getUTCDate()-day);const week=date.toISOString().slice(0,10),bucket=weeks.get(week)||{week,total:0,count:0};bucket.total+=Number(valueOf(record));bucket.count++;weeks.set(week,bucket)});return [...weeks.values()].sort((a,b)=>a.week.localeCompare(b.week)).map(bucket=>({...bucket,average:bucket.total/bucket.count}));}
+function renderWeeklyAverageChart(container,records,options){const points=weeklyAverage(records,options.date,options.value);container.setAttribute('aria-label',options.label+': '+points.map(p=>'week of '+p.week+', '+p.average.toFixed(2)+' days, '+p.count+' issue'+(p.count===1?'':'s')).join('; '));if(!points.length){container.innerHTML='<div class="chart-empty">No qualifying completed issues in the selected range.</div>';return;}const width=900,height=250,left=58,right=22,top=26,bottom=48,plotW=width-left-right,plotH=height-top-bottom,max=Math.max(...points.map(p=>p.average),1),x=i=>left+(points.length===1?plotW/2:i*plotW/(points.length-1)),y=v=>top+plotH-v/max*plotH;const ticks=[0,.25,.5,.75,1].map(f=>{const yy=y(max*f);return '<line class="chart-grid" x1="'+left+'" x2="'+(width-right)+'" y1="'+yy+'" y2="'+yy+'"/><text class="chart-axis" x="'+(left-8)+'" y="'+(yy+4)+'" text-anchor="end">'+(max*f).toFixed(1)+'</text>'}).join(''),path=points.map((p,i)=>(i?'L':'M')+x(i)+' '+y(p.average)).join(' '),marks=points.map((p,i)=>'<g><circle class="chart-point" cx="'+x(i)+'" cy="'+y(p.average)+'" r="5"><title>Week of '+p.week+': '+p.average.toFixed(2)+' days across '+p.count+' issue'+(p.count===1?'':'s')+'</title></circle><text class="chart-label" x="'+x(i)+'" y="'+(y(p.average)-11)+'" text-anchor="middle">'+p.average.toFixed(1)+'d · n='+p.count+'</text><text class="chart-axis" x="'+x(i)+'" y="'+(height-19)+'" text-anchor="middle">'+p.week.slice(5)+'</text></g>').join('');container.innerHTML='<svg viewBox="0 0 '+width+' '+height+'" aria-hidden="true">'+ticks+'<text class="chart-axis" transform="translate(15 '+(top+plotH/2)+') rotate(-90)" text-anchor="middle">Average calendar days</text><path class="chart-line" d="'+path+'"/>'+marks+'</svg>';}
+document.querySelectorAll('.cycle-group').forEach(group=>{const raw=JSON.parse(group.querySelector('.cycle-records').textContent),records=raw.map(item=>({key:item[0],ended:item[1],days:item[2],statuses:item[3],element:group.querySelector('[data-cycle-key="'+CSS.escape(item[0])+'"]')}));bindDateScope(group,()=>records,record=>record.ended,(included,all)=>{const ranked=[...included].sort((a,b)=>b.days-a.days);all.forEach(record=>record.element.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(record)));const total=included.reduce((sum,record)=>sum+record.days,0),statuses={};included.forEach(record=>Object.entries(record.statuses).forEach(([status,days])=>statuses[status]=(statuses[status]||0)+Number(days)));const top=Object.entries(statuses).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))[0];group.querySelector('.cycle-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.cycle-sample').textContent=String(included.length);group.querySelector('.cycle-top-status').textContent=top?top[0]+' ('+top[1].toFixed(2)+'d)':'—';renderWeeklyAverageChart(group.querySelector('.weekly-chart-canvas'),included,{date:record=>record.ended,value:record=>record.days,label:'Weekly average cycle time'});});});
 document.querySelectorAll('.pr-metric-group').forEach(group=>bindDateScope(group,()=>[...group.querySelectorAll('.pr-metric-contribution')],row=>row.dataset.prMerged,(included,all)=>{const ranked=[...included].sort((a,b)=>Number(b.dataset.metricHours)-Number(a.dataset.metricHours));all.forEach(row=>row.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(row)));const total=included.reduce((sum,row)=>sum+Number(row.dataset.metricHours),0);group.querySelector('.pr-metric-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.pr-metric-sample').textContent=String(included.length);}));
 document.querySelectorAll('.table-wrap').forEach(w=>{if(w.closest('.cycle-group,.pr-metric-group'))return;const dated=[...w.querySelectorAll('[data-date]')];if(dated.length)bindDateScope(w,()=>dated,row=>row.dataset.date);});
 document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),rows=[...table.tBodies[0].rows].filter(r=>r.cells.length>1),controls=[...scope.querySelectorAll('[data-finder-field]')],attention=scope.querySelector('[data-finder-attention]'),count=scope.querySelector('.finder-count');function applyFacets(){rows.forEach(row=>{row.classList.toggle('facet-hidden',controls.some(control=>control.value&&row.dataset[control.dataset.finderField]!==control.value));const value=attention.value,level=row.dataset.attention||'none',hide=Boolean(value)&&!((value==='flagged'&&(level==='red'||level==='amber'))||level===value);row.classList.toggle('attention-hidden',hide);});const shown=rows.filter(row=>!row.classList.contains('facet-hidden')&&!row.classList.contains('attention-hidden')).length;count.textContent=shown+' of '+rows.length+' issues';}controls.forEach(control=>control.addEventListener('change',applyFacets));attention.addEventListener('change',applyFacets);scope.addEventListener('finder-attention-change',applyFacets);scope.querySelector('[data-finder-clear]').addEventListener('click',()=>{controls.forEach(control=>control.value='');attention.value='';applyFacets();});applyFacets();});
@@ -1807,18 +1850,31 @@ def main() -> None:
         completion["months"].get(current_month, {}).get("credit", 0.0)
         for completion in team_completion.values()
     )
+    report_model = assemble_report_model(
+        snapshot_id=args.snapshot,
+        dashboard=dashboard,
+        people=people,
+        team_names=report_teams,
+        metrics=team_metrics,
+        build_cycle=team_build_cycle,
+        github_pr_metrics=team_github_pr_metrics,
+        details=team_details,
+        work=team_work,
+        completion=team_completion,
+    )
 
     team_quick_links = []
     team_detail_sections = []
     for name in report_teams:
+        team_data = report_model["teams"][name]
         row = team_rows.get(name)
         if row is None:
             continue
-        completion = team_completion[name]
+        completion = team_data["completion"]
         team_items = [*row.get("in_progress", []), *row.get("ready_for_build", [])]
         feature_rows = [(features[item["jira_key"]], item) for item in team_items]
         _content_summary, health_items, notable = team_summaries(
-            name, row, feature_rows, memberships, snapshot_at, team_metrics[name]
+            name, row, feature_rows, memberships, snapshot_at, team_data["metrics"]
         )
         issue_urls = {
             node["jira_key"]: node["url"]
@@ -1836,7 +1892,7 @@ def main() -> None:
             f'<li>{linked_jira_text(item, issue_urls)}</li>' for item in health_items
         ) + '</ul>'
         team_people = [person for person in people if person["display_name"] in team_members[name]]
-        activity_html = team_activity_tables(team_details[name], team_people)
+        activity_html = team_activity_tables(team_data["details"], team_people)
         notable_html = "".join(f'<li>{esc(item)}</li>' for item in notable) or '<li>No notable hygiene findings.</li>'
         team_href = f"#/teams/{slug(name)}"
         team_quick_links.append(
@@ -1855,20 +1911,20 @@ def main() -> None:
         team_body = (
             f'<div class="hero"><span class="eyebrow">Team detail</span><h2>{esc(name)}</h2>'
             f'<h2>Team Health</h2>{health_html}'
-            f'<h3>RAG status</h3>{rag_status_index(slug(name), team_build_cycle.get(name), team_github_pr_metrics.get(name))}'
+            f'<h3>RAG status</h3>{rag_status_index(slug(name), team_data["build_cycle"], team_data["github_pr_metrics"])}'
             f'<div>{member_links_detail}</div></div>'
             + accordion(
                 "Build Cycle Time",
-                build_cycle_time_section(team_build_cycle.get(name)),
+                build_cycle_time_section(team_data["build_cycle"]),
             )
             + accordion(
                 "GitHub PR Metrics",
-                github_pr_metrics_section(team_github_pr_metrics.get(name)),
+                github_pr_metrics_section(team_data["github_pr_metrics"]),
             )
             + accordion(
                 "IBR vs non-IBR work",
-                team_work_section(team_work.get(name)),
-                summary_extra=team_work_summary_extra(team_work.get(name)),
+                team_work_section(team_data["work"]),
+                summary_extra=team_work_summary_extra(team_data["work"]),
             )
             + accordion("Completion by Target Date", completion_table_html(completion))
             + accordion("Recent activity", activity_html)
