@@ -140,6 +140,8 @@ class BuildCycleTimeQuery:
                 group = classification(issue_id)
                 if not _eligible_issue(group, timeline.version.issue_type_name):
                     continue
+                if not _is_done_status(timeline.version.status_name):
+                    continue
                 cycle = _cycle(timeline)
                 if cycle is None:
                     continue
@@ -196,6 +198,7 @@ class BuildCycleTimeQuery:
                         "to the first subsequent entry into Done."
                     ),
                     "The report date filter selects issues by their Done transition.",
+                    "Only issues whose current Jira status is exactly Done are included.",
                     "Issues with a zero-day cycle are excluded.",
                 ],
             )
@@ -240,6 +243,10 @@ def _eligible_issue(classification: str, issue_type: str | None) -> bool:
     return classification == "non_ibr" or (
         (issue_type or "").strip().casefold() in PARENT_ISSUE_TYPES
     )
+
+
+def _is_done_status(status_name: str | None) -> bool:
+    return _canonical(status_name) == "done"
 
 
 def _cycle(

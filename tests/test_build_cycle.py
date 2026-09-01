@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from engineering_intelligence.queries.build_cycle import (
     _cycle,
     _eligible_issue,
+    _is_done_status,
     workflow_cycle_metrics,
 )
 
@@ -68,6 +69,14 @@ def test_non_ibr_accepts_all_issue_types_but_ibr_is_parent_only() -> None:
     assert _eligible_issue("ibr_linked", "Feature Request") is True
     assert _eligible_issue("ibr_linked", "FDI Request") is True
     assert _eligible_issue("ibr_linked", "Bug") is False
+
+
+def test_cycle_population_requires_exact_done_status() -> None:
+    assert _is_done_status("Done") is True
+    assert _is_done_status(" done ") is True
+    assert _is_done_status("Won't Do") is False
+    assert _is_done_status("Closed") is False
+    assert _is_done_status(None) is False
 
 
 def test_workflow_cycle_metrics_breaks_out_requested_phases() -> None:
