@@ -1,6 +1,6 @@
 # Expand report to all confirmed Jira teams
 
-**Status:** Approved — implementation in progress
+**Status:** Completed
 **Owner:** titan
 **Started:** 2026-09-01
 **Approved:** 2026-09-01 by Matt Voget
@@ -32,15 +32,22 @@ whose team, person, finder, and metric views all use that expanded snapshot scop
 7. The self-contained report contains all teams and unique people and passes structural
    and repository verification before delivery.
 
-## Checkpoints
+## Completion evidence
 
-1. **In progress:** Resolve the approved names to unique Jira identities and construct
-   private configuration updates.
-2. Validate every new team query and private configuration.
-3. Run a full incremental refresh and render the new snapshot.
-4. Verify, deliver, and record final coverage/timing evidence.
+1. Private configuration validates with 16 teams, 37 unique people, and 42
+   memberships. Edge Stack and Platform Team have explicit empty rosters because the
+   approved mapping supplied no members for them.
+2. All 16 pinned Jira team-field queries validated and returned evidence.
+3. Refresh `aedc468e-1a6f-4b5f-ae0d-f7e4fed3eca2` completed all 355 sources (18 Jira
+   and 337 GitHub) and pinned snapshot `refresh-20260901T194024Z` / snapshot ID
+   `7ba421f7-7083-4481-ace3-eccde071c771`.
+4. The generated report contains 16 team sections, 37 individual sections, and 120
+   feature views. It is self-contained with no external scripts or styles, and all
+   inline JavaScript parses successfully.
+5. Repository verification passed: Ruff clean and 143 tests passed.
 
-## Exact next action
+## Follow-up
 
-Resolve ambiguous cross-team names from existing Jira evidence, preserving known
-identities and leaving unconfirmed GitHub mappings empty.
+Report materialization exposed repeated full-snapshot scans in team-work and
+individual/feature evidence resolution. Consolidate these into shared snapshot-backed
+materializations so expanded reports do not repeat equivalent queries per route.
