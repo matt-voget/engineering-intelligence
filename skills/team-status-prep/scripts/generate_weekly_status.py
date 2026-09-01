@@ -20,12 +20,18 @@ from pathlib import Path
 
 LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "engineering-intelligence-logo.png"
 REPORT_CACHE_VERSION = "1"
+REPORT_QUERY_REVISIONS = {("team", "work"): "2"}
 _query_cache_dir: Path | None = None
 _query_cache_context = ""
 _query_cache_rebuild = False
 _query_cache_stats = {"hits": 0, "misses": 0}
 _query_cache_stats_lock = threading.Lock()
 REPORT_QUERY_WORKERS = 3
+FINDER_CHART_CSS = (
+    ".finder-chart-grid{display:grid;grid-template-columns:repeat(auto-fit,"
+    "minmax(420px,1fr));gap:12px}.finder-chart-grid .weekly-chart{min-width:0}"
+    "@media(max-width:650px){.finder-chart-grid{grid-template-columns:1fr}}"
+)
 
 
 def esc(value: object) -> str:
@@ -34,12 +40,13 @@ def esc(value: object) -> str:
 
 def run_json(args: list[str], data_dir: Path) -> dict:
     cache_path = _query_cache_path(args)
+    cache_version = _query_cache_version(args)
     if cache_path is not None and cache_path.exists() and not _query_cache_rebuild:
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Invalid report cache entry {cache_path}: {exc}") from exc
-        if cached.get("args") != args or cached.get("version") != REPORT_CACHE_VERSION:
+        if cached.get("args") != args or cached.get("version") != cache_version:
             raise RuntimeError(f"Mismatched report cache entry {cache_path}")
         with _query_cache_stats_lock:
             _query_cache_stats["hits"] += 1
@@ -56,7 +63,7 @@ def run_json(args: list[str], data_dir: Path) -> dict:
     payload = json.loads(result.stdout)
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        envelope = {"version": REPORT_CACHE_VERSION, "args": args, "payload": payload}
+        envelope = {"version": cache_version, "args": args, "payload": payload}
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=cache_path.parent, delete=False
         ) as handle:
@@ -124,11 +131,27 @@ def _query_cache_path(args: list[str]) -> Path | None:
     if _query_cache_dir is None:
         return None
     key = hashlib.sha256(json.dumps({
-        "version": REPORT_CACHE_VERSION,
+        "version": _query_cache_version(args),
         "context": _query_cache_context,
         "args": args,
     }, sort_keys=True).encode()).hexdigest()
     return _query_cache_dir / f"{key}.json"
+
+
+def _query_cache_version(args: list[str]) -> str:
+    revision = next(
+        (
+            value
+            for prefix, value in REPORT_QUERY_REVISIONS.items()
+            if tuple(args[: len(prefix)]) == prefix
+        ),
+        None,
+    )
+    return (
+        REPORT_CACHE_VERSION
+        if revision is None
+        else f"{REPORT_CACHE_VERSION}:{revision}"
+    )
 
 
 def link(url: str | None, label: object) -> str:
@@ -1036,7 +1059,9 @@ def issue_finder_section(issues: list[dict]) -> str:
         f'''<tr data-date="{date_attr(item.get('source_updated_at'))}"
         data-issue-team="{esc(item['team_name'])}"
         data-issue-status="{esc(item.get('status') or 'Unknown')}"
-        data-issue-classification="{esc(item.get('classification') or 'unknown')}">
+        data-issue-classification="{esc(item.get('classification') or 'unknown')}"
+        data-cycle-ended="{date_attr(item.get('cycle_ended_at'))}"
+        data-total-cycle-days="{item.get('total_cycle_days') if item.get('cycle_ended_at') and item.get('total_cycle_days') is not None else ''}">
         <td>{link(item.get("url"), item.get("jira_key"))}</td>
         <td>{esc(item["team_name"])}</td>
         <td class="{'quality-missing' if not item.get('issue_type') else ''}">{esc(item.get("issue_type") or "Unknown")}</td>
@@ -1060,6 +1085,12 @@ def issue_finder_section(issues: list[dict]) -> str:
         + controls
         + threshold_manager
         + column_manager
+        + '<figure class="weekly-chart finder-weekly-chart" data-issue-finder-chart>'
+        '<figcaption><strong>Weekly average completed Build Cycle Time</strong>'
+        '<span>Grouped by the UTC Monday of each Done transition. All table filters '
+        'apply; running and incomplete cycles are excluded.</span></figcaption>'
+        '<div class="weekly-chart-canvas" role="img" aria-label="Issue Finder weekly '
+        'average completed Build Cycle Time chart"></div></figure>'
         + '<div class="table-wrap"><table class="issue-finder-table"><thead><tr>'
         '<th data-column-key="jira">Jira</th><th data-column-key="team">Team</th>'
         '<th data-column-key="type">Type</th><th data-column-key="status">Status</th>'
@@ -1127,6 +1158,10 @@ def github_finder_section(view: dict, people_directory: dict | None = None) -> s
       <label>Jira link <select data-gh-filter="jira"><option value="">All records</option><option value="linked">Linked</option><option value="unlinked">Unlinked</option></select></label>
       <label>From <input type="date" data-gh-filter="from"></label><label>To <input type="date" data-gh-filter="to"></label>
       <button class="toggle" type="button" data-gh-clear>Clear filters</button><span class="finder-count" data-gh-count aria-live="polite"></span>
+    </div>
+    <div class="finder-chart-grid">
+      <figure class="weekly-chart" data-github-finder-chart="pickup"><figcaption><strong>Weekly average PR pickup time</strong><span>Uses all filtered qualifying pull requests, not only the current page.</span></figcaption><div class="weekly-chart-canvas" role="img" aria-label="GitHub Finder weekly average PR pickup time chart"></div></figure>
+      <figure class="weekly-chart" data-github-finder-chart="review"><figcaption><strong>Weekly average PR review time</strong><span>Uses all filtered qualifying pull requests, not only the current page.</span></figcaption><div class="weekly-chart-canvas" role="img" aria-label="GitHub Finder weekly average PR review time chart"></div></figure>
     </div>
     <details class="column-manager github-column-manager"><summary>Manage columns</summary>
       <p class="table-note">Move visible columns or remove them from this view. Removed columns can be added back.</p>
@@ -1633,6 +1668,7 @@ document.querySelectorAll('.cycle-group').forEach(group=>{const raw=JSON.parse(g
 document.querySelectorAll('.pr-metric-group').forEach(group=>{const metric=group.dataset.prMetric,raw=JSON.parse(group.querySelector('.pr-metric-records').textContent),records=raw.map(item=>({key:item[0],merged:item[1],hours:item[2],element:group.querySelector('[data-pr-key="'+CSS.escape(item[0])+'"]')}));bindDateScope(group,()=>records,record=>record.merged,(included,all)=>{const ranked=[...included].sort((a,b)=>b.hours-a.hours);all.forEach(record=>record.element.classList.toggle('cycle-excluded',!ranked.slice(0,5).includes(record)));const total=included.reduce((sum,record)=>sum+record.hours,0);group.querySelector('.pr-metric-average').textContent=included.length?(total/included.length).toFixed(2):'—';group.querySelector('.pr-metric-sample').textContent=String(included.length);renderWeeklyAverageChart(group.querySelector('.weekly-chart-canvas'),included,{date:record=>record.merged,value:record=>record.hours,label:'Weekly average PR '+metric+' time',unit:'hours',shortUnit:'h',axisLabel:'Average hours',recordLabel:'pull request'});});});
 document.querySelectorAll('.table-wrap').forEach(w=>{if(w.closest('.cycle-group,.pr-metric-group'))return;const dated=[...w.querySelectorAll('[data-date]')];if(dated.length)bindDateScope(w,()=>dated,row=>row.dataset.date);});
 document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),rows=[...table.tBodies[0].rows].filter(r=>r.cells.length>1),controls=[...scope.querySelectorAll('[data-finder-field]')],attention=scope.querySelector('[data-finder-attention]'),count=scope.querySelector('.finder-count');function applyFacets(){rows.forEach(row=>{row.classList.toggle('facet-hidden',controls.some(control=>control.value&&row.dataset[control.dataset.finderField]!==control.value));const value=attention.value,level=row.dataset.attention||'none',hide=Boolean(value)&&!((value==='flagged'&&(level==='red'||level==='amber'))||level===value);row.classList.toggle('attention-hidden',hide);});const shown=rows.filter(row=>!row.classList.contains('facet-hidden')&&!row.classList.contains('attention-hidden')).length;count.textContent=shown+' of '+rows.length+' issues';}controls.forEach(control=>control.addEventListener('change',applyFacets));attention.addEventListener('change',applyFacets);scope.addEventListener('finder-attention-change',applyFacets);scope.querySelector('[data-finder-clear]').addEventListener('click',()=>{controls.forEach(control=>control.value='');attention.value='';applyFacets();});applyFacets();});
+document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),canvas=scope.querySelector('[data-issue-finder-chart] .weekly-chart-canvas'),rows=[...table.tBodies[0].rows].filter(row=>row.cells.length>1);let queued=false;function update(){queued=false;const records=rows.filter(row=>!['facet-hidden','attention-hidden','date-hidden','text-hidden'].some(name=>row.classList.contains(name))&&row.dataset.cycleEnded&&row.dataset.totalCycleDays!=='').map(row=>({ended:row.dataset.cycleEnded,days:Number(row.dataset.totalCycleDays)}));renderWeeklyAverageChart(canvas,records,{date:record=>record.ended,value:record=>record.days,label:'Issue Finder weekly average completed Build Cycle Time',unit:'calendar days',shortUnit:'d',axisLabel:'Average calendar days',recordLabel:'issue'});}new MutationObserver(()=>{if(!queued){queued=true;requestAnimationFrame(update)}}).observe(table,{subtree:true,attributes:true,attributeFilter:['class']});update();});
 document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),inputs=[...scope.querySelectorAll('[data-threshold-metric]')],note=scope.querySelector('[data-threshold-note]'),rows=[...table.tBodies[0].rows].filter(row=>row.cells.length>1);function threshold(metric,level){const input=inputs.find(item=>item.dataset.thresholdMetric===metric&&item.dataset.thresholdLevel===level);return input&&input.value!==''?Number(input.value):null;}function applyThresholds(){let invalid=false;const metrics=new Set(inputs.map(input=>input.dataset.thresholdMetric));metrics.forEach(metric=>{const amber=threshold(metric,'amber'),red=threshold(metric,'red');if(amber!==null&&red!==null&&red<amber)invalid=true;});table.querySelectorAll('.metric-cell').forEach(cell=>{cell.classList.remove('cell-red','cell-amber');const value=cell.dataset.value;if(value===undefined)return;const amber=threshold(cell.dataset.metric,'amber'),red=threshold(cell.dataset.metric,'red'),number=Number(value);if(red!==null&&number>=red)cell.classList.add('cell-red');else if(amber!==null&&number>=amber)cell.classList.add('cell-amber');});rows.forEach(row=>{row.dataset.attention=row.querySelector('.cell-red')?'red':row.querySelector('.cell-amber')?'amber':row.querySelector('.quality-missing')?'missing':'none';});note.textContent=invalid?'A Red threshold is below Amber; Red still takes precedence.':'';scope.dispatchEvent(new CustomEvent('finder-attention-change'));}inputs.forEach(input=>input.addEventListener('input',applyThresholds));scope.querySelector('[data-threshold-clear]').addEventListener('click',()=>{inputs.forEach(input=>input.value='');applyThresholds();});applyThresholds();});
 document.querySelectorAll('.issue-finder-table').forEach(table=>{const scope=table.closest('.app-view'),manager=scope.querySelector('.column-manager'),headerRow=table.tHead.rows[0],allRows=[headerRow,...table.tBodies[0].rows];[...headerRow.cells].forEach((th,index)=>allRows.slice(1).forEach(row=>row.cells[index].dataset.columnKey=th.dataset.columnKey));function cellsFor(key){return allRows.map(row=>[...row.cells].find(cell=>cell.dataset.columnKey===key));}function move(key,direction){const visible=[...headerRow.cells].filter(cell=>!cell.classList.contains('column-hidden')),source=visible.find(cell=>cell.dataset.columnKey===key),index=visible.indexOf(source),target=visible[index+direction];if(!source||!target)return;const sourceCells=cellsFor(key),targetCells=cellsFor(target.dataset.columnKey);sourceCells.forEach((cell,rowIndex)=>{const targetCell=targetCells[rowIndex];targetCell.parentNode.insertBefore(cell,direction<0?targetCell:targetCell.nextSibling);});render();}function setHidden(key,hidden){cellsFor(key).forEach(cell=>cell.classList.toggle('column-hidden',hidden));render();}function add(key){const cells=cellsFor(key);cells.forEach(cell=>{cell.classList.remove('column-hidden');cell.parentNode.appendChild(cell);});render();}function render(){const visible=[...headerRow.cells].filter(cell=>!cell.classList.contains('column-hidden')),hidden=[...headerRow.cells].filter(cell=>cell.classList.contains('column-hidden')),list=manager.querySelector('[data-column-list]'),select=manager.querySelector('[data-column-add-select]');list.innerHTML=visible.map((cell,index)=>'<span class="column-item"><strong>'+cell.textContent.replace(/[▲▼]/g,'').trim()+'</strong><button type="button" data-column-left="'+cell.dataset.columnKey+'" aria-label="Move '+cell.textContent.trim()+' left" '+(index===0?'disabled':'')+'>←</button><button type="button" data-column-right="'+cell.dataset.columnKey+'" aria-label="Move '+cell.textContent.trim()+' right" '+(index===visible.length-1?'disabled':'')+'>→</button><button type="button" data-column-remove="'+cell.dataset.columnKey+'" aria-label="Remove '+cell.textContent.trim()+'" '+(visible.length===1?'disabled':'')+'>×</button></span>').join('');select.innerHTML=hidden.length?hidden.map(cell=>'<option value="'+cell.dataset.columnKey+'">'+cell.textContent.replace(/[▲▼]/g,'').trim()+'</option>').join(''):'<option value="">No hidden columns</option>';select.disabled=!hidden.length;manager.querySelector('[data-column-add]').disabled=!hidden.length;list.querySelectorAll('[data-column-left]').forEach(button=>button.onclick=()=>move(button.dataset.columnLeft,-1));list.querySelectorAll('[data-column-right]').forEach(button=>button.onclick=()=>move(button.dataset.columnRight,1));list.querySelectorAll('[data-column-remove]').forEach(button=>button.onclick=()=>setHidden(button.dataset.columnRemove,true));}manager.querySelector('[data-column-add]').onclick=()=>{const select=manager.querySelector('[data-column-add-select]');if(select.value)add(select.value);};render();});
 document.querySelectorAll('.github-finder-table').forEach(table=>{const scope=table.closest('.app-view'),raw=JSON.parse(scope.querySelector('#github-finder-data').textContent),rows=raw.map(r=>({type:r[0],repository:r[1],identifier:r[2],title:r[3],url:r[4],state:r[5],draft:r[6],author:r[7],created:r[8],updated:r[9],merged:r[10],authored:r[11],committed:r[12],head:r[13],base:r[14],commits:r[15],reviews:r[16],reviewers:r[17],prs:r[18],jira:r[19],jiraUrls:r[20],authorTeams:r[21],reviewerTeams:r[22],firstReviewed:r[23],pickupHours:r[24],reviewHours:r[25]}));
@@ -1640,7 +1676,8 @@ const columns=[['type','Record'],['repository','Repository'],['identifier','ID']
 const e=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),date=r=>r.merged||r.updated||r.committed||r.authored||r.created||'',hours=v=>v===null||v===undefined?'—':v<24?Number(v).toFixed(1)+' h':(Number(v)/24).toFixed(1)+' d',label=k=>columns.find(c=>c[0]===k)[1],cell=(r,k)=>{if(k==='identifier'||k==='title')return '<a href="'+e(r.url)+'" target="_blank" rel="noreferrer">'+e(r[k])+'</a>';if(k==='type')return r.type==='pull_request'?'Pull request':'Commit';if(k==='state')return e((r.draft?'draft · ':'')+(r.state||'—'));if(k==='date')return date(r)?'<time datetime="'+e(date(r))+'">'+e(date(r).slice(0,10))+'</time>':'—';if(k==='pickupHours'||k==='reviewHours')return e(hours(r[k]));if(k==='reviewers'||k==='prs')return e((r[k]||[]).join(', ')||'—');if(k==='jira')return r.jira.length?r.jira.map(j=>'<a href="'+e(r.jiraUrls[j])+'" target="_blank" rel="noreferrer">'+e(j)+'</a>').join(', '):'—';return e(r[k]??'—')};
 function managerView(){const list=manager.querySelector('[data-column-list]'),select=manager.querySelector('[data-column-add-select]'),hidden=columns.map(c=>c[0]).filter(k=>!visible.includes(k));list.innerHTML=visible.map((k,i)=>'<span class="column-item"><strong>'+e(label(k))+'</strong><button type="button" data-left="'+k+'" '+(i===0?'disabled':'')+'>←</button><button type="button" data-right="'+k+'" '+(i===visible.length-1?'disabled':'')+'>→</button><button type="button" data-remove="'+k+'" '+(visible.length===1?'disabled':'')+'>×</button></span>').join('');select.innerHTML=hidden.length?hidden.map(k=>'<option value="'+k+'">'+e(label(k))+'</option>').join(''):'<option value="">No hidden columns</option>';select.disabled=!hidden.length;manager.querySelector('[data-column-add]').disabled=!hidden.length;list.querySelectorAll('[data-left],[data-right]').forEach(b=>b.onclick=()=>{const k=b.dataset.left||b.dataset.right,i=visible.indexOf(k),d=b.dataset.left?-1:1;[visible[i],visible[i+d]]=[visible[i+d],visible[i]];draw()});list.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{visible=visible.filter(k=>k!==b.dataset.remove);draw()})}
 function draw(){head.innerHTML=visible.map(k=>'<th data-key="'+k+'" class="sortable"'+(k===sortKey?' data-dir="'+sortDir+'"':'')+'>'+e(label(k))+'</th>').join('');head.querySelectorAll('th').forEach(th=>th.onclick=()=>{sortDir=sortKey===th.dataset.key&&sortDir==='asc'?'desc':'asc';sortKey=th.dataset.key;apply()});const start=page*size;body.innerHTML=filtered.slice(start,start+size).map(r=>'<tr>'+visible.map(k=>'<td>'+cell(r,k)+'</td>').join('')+'</tr>').join('')||'<tr><td colspan="'+visible.length+'" class="empty">No GitHub records match these filters.</td></tr>';scope.querySelector('[data-gh-count]').textContent=filtered.length.toLocaleString()+' of '+rows.length.toLocaleString()+' records';scope.querySelector('[data-gh-page]').textContent='Page '+(filtered.length?page+1:0)+' of '+Math.ceil(filtered.length/size);scope.querySelector('[data-gh-prev]').disabled=page===0;scope.querySelector('[data-gh-next]').disabled=start+size>=filtered.length;managerView()}
-function apply(){const text=filters.text.value.toLowerCase(),from=filters.from.value,to=filters.to.value;filtered=rows.filter(r=>(!filters.type.value||r.type===filters.type.value)&&(!filters.repository.value||r.repository===filters.repository.value)&&(!filters.state.value||r.state===filters.state.value)&&(!filters.author.value||r.author===filters.author.value)&&(!filters.authorTeam.value||r.authorTeams.includes(filters.authorTeam.value))&&(!filters.reviewer.value||r.reviewers.includes(filters.reviewer.value))&&(!filters.reviewerTeam.value||r.reviewerTeams.includes(filters.reviewerTeam.value))&&(!filters.jira.value||(filters.jira.value==='linked'?r.jira.length:!r.jira.length))&&(!from||date(r).slice(0,10)>=from)&&(!to||date(r).slice(0,10)<=to)&&(!text||[r.repository,r.identifier,r.title,r.author,r.state,...r.reviewers,...r.prs,...r.jira].join(' ').toLowerCase().includes(text)));filtered.sort((a,b)=>{const av=sortKey==='date'?date(a):a[sortKey],bv=sortKey==='date'?date(b):b[sortKey],c=(typeof av==='number'&&typeof bv==='number')?av-bv:String(av??'').localeCompare(String(bv??''),undefined,{numeric:true,sensitivity:'base'});return sortDir==='asc'?c:-c});page=0;draw()}
+function finderCharts(){[['pickup','pickupHours'],['review','reviewHours']].forEach(([metric,field])=>{const records=filtered.filter(row=>row.type==='pull_request'&&row.merged&&row[field]!==null&&row[field]!==undefined);renderWeeklyAverageChart(scope.querySelector('[data-github-finder-chart="'+metric+'"] .weekly-chart-canvas'),records,{date:record=>record.merged,value:record=>record[field],label:'GitHub Finder weekly average PR '+metric+' time',unit:'hours',shortUnit:'h',axisLabel:'Average hours',recordLabel:'pull request'});});}
+function apply(){const text=filters.text.value.toLowerCase(),from=filters.from.value,to=filters.to.value;filtered=rows.filter(r=>(!filters.type.value||r.type===filters.type.value)&&(!filters.repository.value||r.repository===filters.repository.value)&&(!filters.state.value||r.state===filters.state.value)&&(!filters.author.value||r.author===filters.author.value)&&(!filters.authorTeam.value||r.authorTeams.includes(filters.authorTeam.value))&&(!filters.reviewer.value||r.reviewers.includes(filters.reviewer.value))&&(!filters.reviewerTeam.value||r.reviewerTeams.includes(filters.reviewerTeam.value))&&(!filters.jira.value||(filters.jira.value==='linked'?r.jira.length:!r.jira.length))&&(!from||date(r).slice(0,10)>=from)&&(!to||date(r).slice(0,10)<=to)&&(!text||[r.repository,r.identifier,r.title,r.author,r.state,...r.reviewers,...r.prs,...r.jira].join(' ').toLowerCase().includes(text)));filtered.sort((a,b)=>{const av=sortKey==='date'?date(a):a[sortKey],bv=sortKey==='date'?date(b):b[sortKey],c=(typeof av==='number'&&typeof bv==='number')?av-bv:String(av??'').localeCompare(String(bv??''),undefined,{numeric:true,sensitivity:'base'});return sortDir==='asc'?c:-c});page=0;finderCharts();draw()}
 Object.values(filters).forEach(x=>x.addEventListener(x.tagName==='INPUT'?'input':'change',apply));scope.querySelector('[data-gh-clear]').onclick=()=>{Object.values(filters).forEach(x=>x.value='');apply()};scope.querySelector('[data-gh-prev]').onclick=()=>{page--;draw()};scope.querySelector('[data-gh-next]').onclick=()=>{page++;draw()};manager.querySelector('[data-column-add]').onclick=()=>{const s=manager.querySelector('[data-column-add-select]');if(s.value){visible.push(s.value);draw()}};apply()});
 function setChildren(key,open){document.querySelectorAll('.child-row[data-parent="'+CSS.escape(key)+'"]').forEach(r=>r.classList.toggle('collapsed',!open));document.querySelectorAll('.toggle[data-children="'+CSS.escape(key)+'"]').forEach(b=>b.setAttribute('aria-expanded',String(open)));}
 document.querySelectorAll('.toggle[data-children]').forEach(b=>b.onclick=()=>setChildren(b.dataset.children,b.getAttribute('aria-expanded')!=='true'));
@@ -1662,7 +1699,7 @@ def page(title: str, body: str, generated_at: datetime, snapshot_id: str) -> str
         f'<time datetime="{generated_iso}">{generated_label}</time>'
         f'<span>Snapshot {esc(snapshot_id)}</span></span>'
     )
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{CSS}</style></head><body><nav>{nav}</nav><main id="top">{body}</main><script>{JS}</script></body></html>'''
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)}</title><style>{CSS}{FINDER_CHART_CSS}</style></head><body><nav>{nav}</nav><main id="top">{body}</main><script>{JS}</script></body></html>'''
 
 
 def write_page(path: Path, content: str) -> None:

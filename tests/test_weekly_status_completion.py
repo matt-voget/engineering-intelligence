@@ -127,6 +127,11 @@ def test_run_json_many_is_bounded_and_preserves_request_order(
     assert max_active == 2
 
 
+def test_team_work_cache_revision_is_selective(generator):
+    assert generator._query_cache_version(["dashboard", "get"]) == "1"
+    assert generator._query_cache_version(["team", "work", "A2A"]) == "1:2"
+
+
 def test_page_includes_snapshot_provenance(generator, monkeypatch):
     monkeypatch.setattr(generator, "logo_data_uri", lambda: "data:image/png;base64,test")
     html = generator.page(
@@ -575,3 +580,45 @@ def test_github_finder_embeds_compact_paged_records_and_controls(generator):
     assert "pickupHours" in generator.JS and "PR pickup time" in generator.JS
     assert "reviewHours" in generator.JS and "PR review time" in generator.JS
     assert "A2A" in html and "Foundations" in html
+    assert html.count("data-github-finder-chart=") == 2
+    assert "Uses all filtered qualifying pull requests" in html
+
+
+def test_issue_finder_embeds_completed_cycle_boundary_for_filtered_chart(generator):
+    html = generator.issue_finder_section(
+        [
+            {
+                "jira_key": "ENG-1",
+                "team_name": "Team",
+                "title": "Ship trend chart",
+                "url": "https://jira.example/ENG-1",
+                "status": "Done",
+                "status_category": "done",
+                "issue_type": "Story",
+                "assignee_display_name": "Engineer",
+                "source_updated_at": "2026-08-31T12:00:00Z",
+                "classification": "non_ibr",
+                "active": False,
+                "cycle_started_at": "2026-08-24T09:00:00Z",
+                "cycle_ended_at": "2026-08-28T09:00:00Z",
+                "total_cycle_days": 4.0,
+                "in_progress_cycle_days": 2.0,
+                "in_review_cycle_days": 1.0,
+                "in_test_cycle_days": 1.0,
+                "skipped_phases": [],
+                "linked_pull_requests": [],
+            }
+        ]
+    )
+
+    assert 'data-cycle-ended="2026-08-28"' in html
+    assert 'data-total-cycle-days="4.0"' in html
+    assert "data-issue-finder-chart" in html
+    assert "All table filters apply" in html
+
+
+def test_finder_charts_use_filtered_populations(generator):
+    assert "new MutationObserver" in generator.JS
+    assert "row.dataset.cycleEnded" in generator.JS
+    assert "const records=filtered.filter(row=>row.type==='pull_request'" in generator.JS
+    assert "finderCharts();draw()" in generator.JS

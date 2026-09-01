@@ -44,6 +44,8 @@ class _Timeline:
 
 @dataclass(frozen=True)
 class WorkflowCycleMetrics:
+    period_started_at: datetime
+    period_ended_at: datetime | None
     total_days: float
     in_progress_days: float
     in_review_days: float
@@ -361,6 +363,8 @@ def workflow_cycle_metrics(
         if phase_keys[index] not in visited
     ]
     return WorkflowCycleMetrics(
+        period_started_at=started,
+        period_ended_at=done_at,
         total_days=round((ended - started).total_seconds() / 86400, 2),
         in_progress_days=round(totals["in progress"], 2),
         in_review_days=round(totals["in code review"], 2),

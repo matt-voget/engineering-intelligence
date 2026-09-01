@@ -34,6 +34,8 @@ class ClassifiedJiraIssue(BaseModel):
     ibr_parent_key: str | None
     ibr_parent_url: str | None
     active: bool
+    cycle_started_at: datetime | None = None
+    cycle_ended_at: datetime | None = None
     total_cycle_days: float | None = None
     in_progress_cycle_days: float | None = None
     in_review_cycle_days: float | None = None

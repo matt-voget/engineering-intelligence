@@ -86,6 +86,8 @@ def test_workflow_cycle_metrics_breaks_out_requested_phases() -> None:
 
     assert result is not None
     assert result.total_days == 6.0
+    assert result.period_started_at == started
+    assert result.period_ended_at == started + timedelta(days=6)
     assert result.in_progress_days == 2.0
     assert result.in_review_days == 1.0
     assert result.in_test_days == 2.0
@@ -104,6 +106,8 @@ def test_workflow_cycle_metrics_is_running_and_identifies_skipped_steps() -> Non
 
     assert result is not None
     assert result.total_days == 5.0
+    assert result.period_started_at == started
+    assert result.period_ended_at is None
     assert result.in_progress_days == 2.0
     assert result.in_review_days == 0.0
     assert result.in_test_days == 3.0

@@ -222,6 +222,12 @@ class TeamWorkQuery:
                             ibr_parent_key=ancestor.issue_key if ancestor else None,
                             ibr_parent_url=ancestor.web_url if ancestor else None,
                             active=active,
+                            cycle_started_at=(
+                                cycle_metrics.period_started_at if cycle_metrics else None
+                            ),
+                            cycle_ended_at=(
+                                cycle_metrics.period_ended_at if cycle_metrics else None
+                            ),
                             total_cycle_days=(
                                 cycle_metrics.total_days if cycle_metrics else None
                             ),
