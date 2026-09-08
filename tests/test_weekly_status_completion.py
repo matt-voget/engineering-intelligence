@@ -625,12 +625,15 @@ def test_github_finder_embeds_compact_paged_records_and_controls(generator):
     assert html.count("data-github-finder-chart=") == 3
     assert html.count("data-gh-chart-average") == 3
     assert html.count("data-gh-chart-trend") == 3
-    assert html.count("data-multi-all") == 8
-    assert html.count("data-multi-none") == 8
+    assert html.count("data-multi-all") == 9
+    assert html.count("data-multi-none") == 9
     assert "data-gh-outlier-toggle" in html and "data-gh-outlier-rows" in html
     assert 'data-gh-multi="timing"' in html
     assert html.count("data-gh-outlier-threshold=") == 3
     assert "How GitHub timing metrics are computed" in html
+    assert 'data-gh-multi="teamMapping"' in html
+    assert "Mapped to a Jira team" in html and "Not mapped to a Jira team" in html
+    assert "Mapped person" in generator.JS and "Mapped team(s)" in generator.JS
     assert "github-filter-card" in html
     assert "data-gh-filter-chips" in html
     assert "data-gh-search" in html
