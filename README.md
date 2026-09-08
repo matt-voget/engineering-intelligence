@@ -70,6 +70,11 @@ available. Then ask:
 Use $team-status-prep to generate my current engineering status report.
 ```
 
+Questions about the resulting HTML can invoke
+`$engineering-intelligence-report-analysis`. That skill reads the report's embedded,
+snapshot-pinned rows and reproduces the visible filters and chart grouping before it
+interprets the data.
+
 The remaining sections document the same setup flow command by command and provide a
 CLI-only alternative.
 
@@ -293,3 +298,5 @@ content are outside the system's scope.
 The current implementation and design constraints are in
 [`docs/architecture.md`](docs/architecture.md). The installed
 report contract is [`skills/team-status-prep/SKILL.md`](skills/team-status-prep/SKILL.md).
+The companion analysis contract is
+[`skills/engineering-intelligence-report-analysis/SKILL.md`](skills/engineering-intelligence-report-analysis/SKILL.md).
