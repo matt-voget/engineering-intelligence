@@ -650,15 +650,22 @@ def test_issue_finder_embeds_completed_cycle_boundary_for_filtered_chart(generat
     assert 'data-cycle-ended="2026-08-28"' in html
     assert 'data-total-cycle-days="4.0"' in html
     assert "data-issue-finder-chart" in html
-    assert "only issues currently in Done" in html
+    assert "only issues that entered Done" in html
     assert "data-issue-outlier-toggle" in html
+    assert 'multiple size="4" data-finder-field="issueTeam"' in html
+    assert 'multiple size="4" data-finder-field="issueStatus"' in html
+    assert html.index("data-issue-finder-text") < html.index("data-issue-finder-chart")
+    assert html.index("data-issue-date-from") < html.index("data-issue-finder-chart")
+    assert html.index("weekly-chart-canvas") < html.index("data-issue-outlier-toggle")
+    assert "data-issue-outlier-rows" in html
 
 
 def test_finder_charts_use_filtered_populations(generator):
     assert "new MutationObserver" in generator.JS
     assert "row.dataset.cycleEnded" in generator.JS
-    assert "row.dataset.issueStatus.trim().toLowerCase()==='done'" in generator.JS
+    assert "row.dataset.cycleEnded&&row.dataset.totalCycleDays!==''" in generator.JS
     assert "extremeHighOutliers(records" in generator.JS
-    assert "row=>row.dataset.cycleEnded,null,'Done dates'" in generator.JS
+    assert "interactiveDetails:true" in generator.JS
+    assert "control.selectedOptions" in generator.JS
     assert "const records=filtered.filter(row=>row.type==='pull_request'" in generator.JS
     assert "finderCharts();draw()" in generator.JS
