@@ -82,7 +82,12 @@ The query implementations explain the measured cost:
 ## Checkpoints
 
 1. Add timing/query-count instrumentation and representative parity fixtures.
-2. Implement and test the shared snapshot query context and bulk team-work path.
+2. **In progress 2026-09-08:** The team-work GitHub path now selects candidate pull
+   requests through configured team-member PR, review, and commit identities before
+   loading record families. On the live snapshot, the AM query fell from 157.1 seconds
+   to 3.35 seconds (47x) with byte-for-byte identical JSON; focused tests and Ruff pass.
+   Shared cross-team context remains a possible follow-up only if the full cold
+   benchmark shows it is still necessary.
 3. Implement and test bulk feature/team-detail assembly and individual-cache reuse.
 4. Add the report-bundle CLI and migrate the renderer while retaining atomic cache
    semantics.

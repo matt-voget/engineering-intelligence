@@ -11,7 +11,7 @@ author identity when no Jira link exists at all.
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from engineering_intelligence.config import TeamsConfig
@@ -434,94 +434,140 @@ class TeamWorkQuery:
                 else:
                     split.unlinked += 1
 
-        for full_name, state in github_states.items():
-            high_water = _as_utc(state.high_water_mark)
-            repository = session.scalar(
-                select(GitHubRepository).where(GitHubRepository.full_name == full_name)
+        # Limit the expensive pull/version/commit/review walk to pull requests with
+        # at least one actor attributable to this team. The previous implementation
+        # walked every pull request in every configured repository for every team and
+        # rejected unrelated actors only in ``add_record``.
+        normalized_logins = sorted(logins)
+        candidate_pull_ids = set(
+            session.scalars(
+                select(GitHubPullRequestVersion.pull_request_id).where(
+                    func.lower(GitHubPullRequestVersion.author_login).in_(normalized_logins)
+                )
             )
-            if repository is None:
-                continue
-            pulls = session.scalars(
+        )
+        candidate_pull_ids.update(
+            session.scalars(
+                select(GitHubReview.pull_request_id).where(
+                    func.lower(GitHubReview.author_login).in_(normalized_logins)
+                )
+            )
+        )
+        candidate_pull_ids.update(
+            session.scalars(
+                select(GitHubPullRequestCommit.pull_request_id)
+                .join(
+                    GitHubCommit,
+                    GitHubCommit.sha == GitHubPullRequestCommit.commit_sha,
+                )
+                .where(
+                    or_(
+                        func.lower(GitHubCommit.author_login).in_(normalized_logins),
+                        func.lower(GitHubCommit.author_name).in_(normalized_logins),
+                    )
+                )
+            )
+        )
+        repositories = {
+            repository.id: repository
+            for repository in session.scalars(
+                select(GitHubRepository).where(
+                    GitHubRepository.full_name.in_(sorted(github_states))
+                )
+            )
+        }
+        pulls = (
+            session.scalars(
                 select(GitHubPullRequest).where(
-                    GitHubPullRequest.repository_id == repository.id,
-                    GitHubPullRequest.first_seen_at <= state.high_water_mark,
+                    GitHubPullRequest.id.in_(sorted(candidate_pull_ids))
                 )
             ).all()
-            for pull in pulls:
-                version = session.scalar(
-                    select(GitHubPullRequestVersion)
-                    .where(
-                        GitHubPullRequestVersion.pull_request_id == pull.id,
-                        GitHubPullRequestVersion.observed_at <= state.high_water_mark,
-                    )
-                    .order_by(GitHubPullRequestVersion.observed_at.desc())
-                    .limit(1)
+            if candidate_pull_ids
+            else []
+        )
+        for pull in pulls:
+            repository = repositories.get(pull.repository_id)
+            if repository is None:
+                continue
+            full_name = repository.full_name
+            state = github_states[full_name]
+            high_water = _as_utc(state.high_water_mark)
+            if pull.first_seen_at > state.high_water_mark:
+                continue
+            version = session.scalar(
+                select(GitHubPullRequestVersion)
+                .where(
+                    GitHubPullRequestVersion.pull_request_id == pull.id,
+                    GitHubPullRequestVersion.observed_at <= state.high_water_mark,
                 )
-                if version is None:
-                    continue
-                latest_activity = (
-                    version.source_updated_at
-                    or version.merged_at
-                    or version.closed_at
-                    or version.source_created_at
+                .order_by(GitHubPullRequestVersion.observed_at.desc())
+                .limit(1)
+            )
+            if version is None:
+                continue
+            latest_activity = (
+                version.source_updated_at
+                or version.merged_at
+                or version.closed_at
+                or version.source_created_at
+            )
+            if latest_activity and _as_utc(latest_activity) < list_floor:
+                # Reviews and commits never postdate the pull request's own
+                # last activity, so the whole record family is out of window.
+                continue
+            pull_links = relationships_for("pull_request", pull.id)
+            add_record(
+                "pull_request",
+                pull.id,
+                full_name,
+                version.title,
+                pull.html_url,
+                version.author_login,
+                version.merged_at or version.closed_at or version.source_updated_at,
+                pull_links,
+                [],
+                high_water,
+            )
+            commit_shas = session.scalars(
+                select(GitHubPullRequestCommit.commit_sha).where(
+                    GitHubPullRequestCommit.pull_request_id == pull.id
                 )
-                if latest_activity and _as_utc(latest_activity) < list_floor:
-                    # Reviews and commits never postdate the pull request's own
-                    # last activity, so the whole record family is out of window.
+            ).all()
+            for sha in commit_shas:
+                commit = session.get(GitHubCommit, sha)
+                if commit is None or commit.first_seen_at > state.high_water_mark:
                     continue
-                pull_links = relationships_for("pull_request", pull.id)
                 add_record(
-                    "pull_request",
-                    pull.id,
+                    "commit",
+                    sha,
                     full_name,
-                    version.title,
-                    pull.html_url,
-                    version.author_login,
-                    version.merged_at or version.closed_at or version.source_updated_at,
+                    (commit.message or "").splitlines()[0] if commit.message else "",
+                    commit.html_url,
+                    commit.author_login,
+                    commit.committed_at or commit.authored_at,
+                    relationships_for("commit", sha),
                     pull_links,
-                    [],
                     high_water,
                 )
-                commit_shas = session.scalars(
-                    select(GitHubPullRequestCommit.commit_sha).where(
-                        GitHubPullRequestCommit.pull_request_id == pull.id
-                    )
-                ).all()
-                for sha in commit_shas:
-                    commit = session.get(GitHubCommit, sha)
-                    if commit is None or commit.first_seen_at > state.high_water_mark:
-                        continue
-                    add_record(
-                        "commit",
-                        sha,
-                        full_name,
-                        (commit.message or "").splitlines()[0] if commit.message else "",
-                        commit.html_url,
-                        commit.author_login,
-                        commit.committed_at or commit.authored_at,
-                        relationships_for("commit", sha),
-                        pull_links,
-                        high_water,
-                    )
-                reviews = session.scalars(
-                    select(GitHubReview).where(
-                        GitHubReview.pull_request_id == pull.id,
-                        GitHubReview.observed_at <= state.high_water_mark,
-                    )
-                ).all()
-                for review in reviews:
-                    add_record(
-                        "review",
-                        review.id,
-                        full_name,
-                        f"Review on PR #{pull.number}: {version.title}",
-                        review.html_url or pull.html_url,
-                        review.author_login,
-                        review.submitted_at,
-                        relationships_for("review", review.id),
-                        pull_links,
-                        high_water,
-                    )
+            reviews = session.scalars(
+                select(GitHubReview).where(
+                    GitHubReview.pull_request_id == pull.id,
+                    GitHubReview.observed_at <= state.high_water_mark,
+                )
+            ).all()
+            for review in reviews:
+                add_record(
+                    "review",
+                    review.id,
+                    full_name,
+                    f"Review on PR #{pull.number}: {version.title}",
+                    review.html_url or pull.html_url,
+                    review.author_login,
+                    review.submitted_at,
+                    relationships_for("review", review.id),
+                    pull_links,
+                    high_water,
+                )
         records.sort(
             key=lambda item: (item.occurred_at or snapshot_at, item.record_id),
             reverse=True,
