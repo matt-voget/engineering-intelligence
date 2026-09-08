@@ -14,9 +14,10 @@ from engineering_intelligence.presentations.team import (
     TeamAvailability,
     TeamDetail,
     TeamRosterMember,
+    TeamWorkflowView,
     WorkflowColumn,
 )
-from engineering_intelligence.queries.dashboard import DashboardQuery
+from engineering_intelligence.queries.dashboard import DashboardQuery, _as_utc
 from engineering_intelligence.queries.feature import FeatureQuery
 from engineering_intelligence.queries.metrics import MetricsQuery
 from engineering_intelligence.snapshots.organization import (
@@ -54,6 +55,43 @@ class TeamQuery:
         self.sessions = sessions
         self.dashboard_query = DashboardQuery(sessions, jira_base_url=jira_base_url)
         self.feature_query = FeatureQuery(sessions, max_nodes=max_feature_nodes)
+
+    def workflow(
+        self,
+        snapshot_identifier: str,
+        team_identifier: str,
+        teams_config: TeamsConfig,
+    ) -> TeamWorkflowView:
+        """Return workflow and roster without recomputing feature delivery evidence."""
+        with self.sessions() as session:
+            snapshot = self.dashboard_query._snapshot(session, snapshot_identifier)
+            teams_config = organization_config_for_snapshot(snapshot, teams_config)
+            team = _team_config(teams_config, team_identifier)
+            ibr_scope = f"board:{ibr_board_id_for_snapshot(snapshot)}"
+            source_state = session.scalar(
+                select(SnapshotSourceState).where(
+                    SnapshotSourceState.snapshot_id == snapshot.id,
+                    SnapshotSourceState.scope == ibr_scope,
+                )
+            )
+            if source_state is None:
+                raise ValueError("Snapshot has no configured IBR board source")
+            records = self.dashboard_query._ibr_versions(session, source_state)
+        aliases = {team.name.casefold(), *(alias.casefold() for alias in team.aliases)}
+        work_items = [
+            self.dashboard_query._work_item(issue, version)
+            for issue, version in records
+            if version.team_name and version.team_name.casefold() in aliases
+        ]
+        return TeamWorkflowView(
+            snapshot_id=snapshot.id,
+            snapshot_name=snapshot.name,
+            snapshot_created_at=_as_utc(snapshot.created_at),
+            team_id=team.id,
+            team_name=team.name,
+            workflow=_workflow(work_items),
+            roster=_roster(team, snapshot.created_at.date()),
+        )
 
     def get(
         self,

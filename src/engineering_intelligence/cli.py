@@ -949,6 +949,42 @@ def team_get(
         typer.echo(rendered)
 
 
+@team_app.command("workflow")
+def team_workflow(
+    team_identifier: Annotated[str, typer.Argument(help="Team ID, name, or alias.")],
+    snapshot: Annotated[
+        str,
+        typer.Option("--snapshot", help="Snapshot ID or unique snapshot name."),
+    ],
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Output format: json."),
+    ] = "json",
+    teams_config_path: Annotated[
+        Path,
+        typer.Option("--teams-config", exists=True, dir_okay=False),
+    ] = Path("config/teams.example.yaml"),
+    source_config_path: Annotated[
+        Path,
+        typer.Option("--source-config", exists=True, dir_okay=False),
+    ] = Path("config/sources.example.yaml"),
+    data_dir: DataDir = None,
+) -> None:
+    """Render the lightweight workflow and roster view used by reports."""
+    if output_format != "json":
+        raise typer.BadParameter("Expected json", param_hint="--format")
+    teams_config = load_yaml_model(teams_config_path, TeamsConfig)
+    source_config = load_yaml_model(source_config_path, SourceConfig)
+    paths = runtime_paths(data_dir)
+    upgrade_database(paths.database)
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    workflow = TeamQuery(
+        sessions,
+        jira_base_url=str(source_config.jira.base_url),
+    ).workflow(snapshot, team_identifier, teams_config)
+    typer.echo(workflow.model_dump_json(indent=2))
+
+
 @team_app.command("work")
 def team_work(
     team_identifier: Annotated[str, typer.Argument(help="Team ID, name, or alias.")],

@@ -47,6 +47,21 @@ class TeamAvailability(BaseModel):
     message: str
 
 
+class TeamWorkflowView(BaseModel):
+    """The report's lightweight snapshot-pinned workflow and roster view."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "1"
+    snapshot_id: str
+    snapshot_name: str | None
+    snapshot_created_at: datetime
+    team_id: str
+    team_name: str
+    workflow: list[WorkflowColumn]
+    roster: list[TeamRosterMember]
+
+
 class TeamDetail(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

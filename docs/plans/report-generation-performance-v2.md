@@ -1,6 +1,6 @@
 # Report generation performance v2
 
-**Status:** Awaiting approval
+**Status:** In progress (approved 2026-09-08)
 **Owner:** titan
 **Started:** 2026-09-08
 
@@ -81,7 +81,9 @@ The query implementations explain the measured cost:
 
 ## Checkpoints
 
-1. Add timing/query-count instrumentation and representative parity fixtures.
+1. **Complete 2026-09-08:** Added atomic per-run materialization timing with cache
+   hits, misses, view totals, and slowest calls. The summary is persisted as
+   `materialization.json` beside the snapshot-bound cache and returned by the renderer.
 2. **In progress 2026-09-08:** The team-work GitHub path now selects candidate pull
    requests through configured team-member PR, review, and commit identities before
    loading record families. On the live snapshot, the AM query fell from 157.1 seconds
@@ -93,13 +95,20 @@ The query implementations explain the measured cost:
    record. Migration and focused feature/team-work tests pass; live query output is
    unchanged. Bulk feature/team-detail assembly remains pending measurement of the
    indexed cold path.
-4. Add the report-bundle CLI and migrate the renderer while retaining atomic cache
+4. **Complete 2026-09-08:** GitHub PR metrics now preselect team-authored pull requests
+   and validate only those against each repository's pinned high-water mark. The live AM
+   query completes in 8.1 seconds and produces the same canonical payload as the cached
+   pre-change query.
+5. **Complete 2026-09-08:** Added a lightweight snapshot-pinned `team workflow` view for
+   the workflow and roster data the renderer consumes. The live AM query fell from 40.8
+   to 12.1 seconds, and parity tests verify its workflow and roster against `team get`.
+6. Add the report-bundle CLI and migrate the renderer while retaining atomic cache
    semantics.
-5. Run full verification and live cold/warm benchmarks; tune only from observed data.
-6. Update this plan with measured results, commit and push the completed work, and
+7. Run full verification and live cold/warm benchmarks; tune only from observed data.
+8. Update this plan with measured results, commit and push the completed work, and
    generate a fresh report through the optimized path.
 
 ## Exact next action
 
-After approval, implement checkpoint 1 and commit its tests and instrumentation before
-changing query behavior.
+Commit and push the completed metric, workflow, and timing checkpoint, then run a new
+isolated-cache cold benchmark to decide whether a report-bundle path is still needed.

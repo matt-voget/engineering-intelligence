@@ -101,8 +101,15 @@ def test_team_detail_preserves_complete_workflow_and_roster(tmp_path: Path) -> N
         sessions,
         jira_base_url="https://gravitee.atlassian.net",
     ).get("team-fixture", "a2a", teams)
+    workflow = TeamQuery(
+        sessions,
+        jira_base_url="https://gravitee.atlassian.net",
+    ).workflow("team-fixture", "a2a", teams)
 
     assert team.team_name == "A2A"
+    assert workflow.team_name == team.team_name
+    assert workflow.workflow == team.workflow
+    assert workflow.roster == team.roster
     assert [column.name for column in team.workflow] == WORKFLOW_COLUMNS
     assert next(column for column in team.workflow if column.name == "In Progress").count == 1
     ready = next(column for column in team.workflow if column.name == "Ready for Build")

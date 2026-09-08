@@ -74,100 +74,121 @@ class GitHubPullRequestMetricsQuery:
             }
             contributions: list[PullRequestMetricContribution] = []
             missing_states = []
+            repositories = {
+                repository.full_name: repository
+                for repository in session.scalars(
+                    select(GitHubRepository).where(
+                        GitHubRepository.full_name.in_(repository_names)
+                    )
+                )
+            }
+            repository_context = {}
             for repository_name in repository_names:
                 state = states.get(repository_name)
                 if state is None:
                     missing_states.append(repository_name)
                     continue
-                repository = session.scalar(
-                    select(GitHubRepository).where(
-                        GitHubRepository.full_name == repository_name
-                    )
-                )
+                repository = repositories.get(repository_name)
                 if repository is None:
                     missing_states.append(repository_name)
                     continue
-                high_water = _as_utc(state.high_water_mark)
-                latest = (
-                    select(
-                        GitHubPullRequestVersion.pull_request_id,
-                        func.max(GitHubPullRequestVersion.observed_at).label("observed_at"),
-                    )
-                    .where(GitHubPullRequestVersion.observed_at <= high_water)
-                    .group_by(GitHubPullRequestVersion.pull_request_id)
-                    .subquery()
-                )
-                rows = session.execute(
-                    select(GitHubPullRequest, GitHubPullRequestVersion)
-                    .join(latest, latest.c.pull_request_id == GitHubPullRequest.id)
-                    .join(
-                        GitHubPullRequestVersion,
-                        (
-                            GitHubPullRequestVersion.pull_request_id
-                            == GitHubPullRequest.id
+                repository_context[repository.id] = (repository_name, state)
+
+            # Select only pull requests that have ever been attributed to a current
+            # team author, then validate their latest pinned version below. The old
+            # path rebuilt a latest-version subquery and scanned every pull request
+            # separately for every configured repository and team.
+            candidate_pull_ids = set(
+                session.scalars(
+                    select(GitHubPullRequestVersion.pull_request_id).where(
+                        func.lower(GitHubPullRequestVersion.author_login).in_(
+                            sorted(author_logins)
                         )
-                        & (
-                            GitHubPullRequestVersion.observed_at
-                            == latest.c.observed_at
+                    )
+                )
+            )
+            pulls = (
+                session.scalars(
+                    select(GitHubPullRequest).where(
+                        GitHubPullRequest.id.in_(sorted(candidate_pull_ids))
+                    )
+                ).all()
+                if candidate_pull_ids
+                else []
+            )
+            for pull in pulls:
+                context = repository_context.get(pull.repository_id)
+                if context is None:
+                    continue
+                repository_name, state = context
+                high_water = _as_utc(state.high_water_mark)
+                if pull.first_seen_at > state.high_water_mark:
+                    continue
+                version = session.scalar(
+                    select(GitHubPullRequestVersion)
+                    .where(
+                        GitHubPullRequestVersion.pull_request_id == pull.id,
+                        GitHubPullRequestVersion.observed_at <= state.high_water_mark,
+                    )
+                    .order_by(GitHubPullRequestVersion.observed_at.desc())
+                    .limit(1)
+                )
+                if version is None or not _author_in_scope(
+                    version.author_login, author_logins
+                ):
+                    continue
+                reviews = list(
+                    session.scalars(
+                        select(GitHubReview)
+                        .where(
+                            GitHubReview.pull_request_id == pull.id,
+                            GitHubReview.observed_at <= high_water,
+                            GitHubReview.submitted_at <= high_water,
+                        )
+                        .order_by(GitHubReview.submitted_at, GitHubReview.id)
+                    ).all()
+                )
+                measurement = _measure(version, reviews)
+                if measurement is None:
+                    continue
+                first_reviewed_at, pickup_hours, review_hours, reviewer_logins = (
+                    measurement
+                )
+                contributions.append(
+                    PullRequestMetricContribution(
+                        repository=repository_name,
+                        number=pull.number,
+                        title=version.title,
+                        url=pull.html_url,
+                        author=_person(version.author_login, identity),
+                        reviewers=[
+                            _person(login, identity)
+                            for login in reviewer_logins
+                            if _person(login, identity) is not None
+                        ],
+                        created_at=_as_utc(version.source_created_at),
+                        first_reviewed_at=first_reviewed_at,
+                        merged_at=_as_utc(version.merged_at),
+                        pickup_hours=pickup_hours,
+                        review_hours=review_hours,
+                        pickup_rag=assess_rag(
+                            teams_config.rag,
+                            team_id=team.id,
+                            section="github_pr_metrics",
+                            metric="pickup_hours",
+                            value=pickup_hours,
+                            record_key=f"{repository_name}-{pull.number}",
+                        ),
+                        review_rag=assess_rag(
+                            teams_config.rag,
+                            team_id=team.id,
+                            section="github_pr_metrics",
+                            metric="review_hours",
+                            value=review_hours,
+                            record_key=f"{repository_name}-{pull.number}",
                         ),
                     )
-                    .where(GitHubPullRequest.repository_id == repository.id)
-                ).all()
-                for pull, version in rows:
-                    if not _author_in_scope(version.author_login, author_logins):
-                        continue
-                    reviews = list(
-                        session.scalars(
-                            select(GitHubReview)
-                            .where(
-                                GitHubReview.pull_request_id == pull.id,
-                                GitHubReview.observed_at <= high_water,
-                                GitHubReview.submitted_at <= high_water,
-                            )
-                            .order_by(GitHubReview.submitted_at, GitHubReview.id)
-                        ).all()
-                    )
-                    measurement = _measure(version, reviews)
-                    if measurement is None:
-                        continue
-                    first_reviewed_at, pickup_hours, review_hours, reviewer_logins = (
-                        measurement
-                    )
-                    contributions.append(
-                        PullRequestMetricContribution(
-                            repository=repository_name,
-                            number=pull.number,
-                            title=version.title,
-                            url=pull.html_url,
-                            author=_person(version.author_login, identity),
-                            reviewers=[
-                                _person(login, identity)
-                                for login in reviewer_logins
-                                if _person(login, identity) is not None
-                            ],
-                            created_at=_as_utc(version.source_created_at),
-                            first_reviewed_at=first_reviewed_at,
-                            merged_at=_as_utc(version.merged_at),
-                            pickup_hours=pickup_hours,
-                            review_hours=review_hours,
-                            pickup_rag=assess_rag(
-                                teams_config.rag,
-                                team_id=team.id,
-                                section="github_pr_metrics",
-                                metric="pickup_hours",
-                                value=pickup_hours,
-                                record_key=f"{repository_name}-{pull.number}",
-                            ),
-                            review_rag=assess_rag(
-                                teams_config.rag,
-                                team_id=team.id,
-                                section="github_pr_metrics",
-                                metric="review_hours",
-                                value=review_hours,
-                                record_key=f"{repository_name}-{pull.number}",
-                            ),
-                        )
-                    )
+                )
             contributions.sort(
                 key=lambda item: (-item.pickup_hours, item.repository, item.number)
             )

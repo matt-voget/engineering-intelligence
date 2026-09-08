@@ -1,6 +1,7 @@
 """Target-Date completion math for the weekly status report generator."""
 
 import importlib.util
+import json
 import subprocess
 import threading
 import time
@@ -82,6 +83,16 @@ def test_run_json_materializes_then_reuses_snapshot_cache(generator, tmp_path, m
     assert generator.run_json(["example", "get"], tmp_path) == {"value": 42}
     assert len(calls) == 1
     assert generator._query_cache_stats == {"hits": 1, "misses": 1}
+
+    summary = generator.write_materialization_summary(tmp_path / "cache")
+    persisted = json.loads(
+        (tmp_path / "cache" / "materialization.json").read_text(encoding="utf-8")
+    )
+    assert summary == persisted
+    assert summary["cache"] == {"hits": 1, "misses": 1}
+    assert summary["views"]["example get"]["count"] == 2
+    assert summary["views"]["example get"]["hits"] == 1
+    assert summary["views"]["example get"]["misses"] == 1
 
 
 def test_run_json_fails_loudly_on_corrupt_cache(generator, tmp_path, monkeypatch):
@@ -172,6 +183,31 @@ def test_report_model_reuses_the_same_snapshot_pinned_views(generator):
     assert model["people"] is people
     assert model["teams"]["Team"]["build_cycle"] is build_cycle["Team"]
     assert model["teams"]["Team"]["work"] is work["Team"]
+
+
+def test_classified_team_delivery_preserves_linked_and_unlinked_pull_requests(generator):
+    rows = generator.classified_team_delivery({
+        "jira_issues": [{"jira_key": "ENG-1", "url": "https://jira/ENG-1"}],
+        "github_records": [
+            {
+                "record_type": "pull_request",
+                "record_id": "acme/api#1",
+                "jira_keys": ["ENG-1"],
+            },
+            {
+                "record_type": "pull_request",
+                "record_id": "acme/api#2",
+                "jira_keys": [],
+            },
+            {"record_type": "commit", "record_id": "abc", "jira_keys": ["ENG-1"]},
+        ],
+    })
+
+    assert [(row["record_id"], row["direct_jira_key"]) for row in rows] == [
+        ("acme/api#1", "ENG-1"),
+        ("acme/api#2", None),
+    ]
+    assert rows[0]["direct_jira_url"] == "https://jira/ENG-1"
 
 
 def test_build_cycle_chart_and_table_share_one_canonical_record_payload(generator):

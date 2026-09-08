@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,8 @@ _query_cache_context = ""
 _query_cache_rebuild = False
 _query_cache_stats = {"hits": 0, "misses": 0}
 _query_cache_stats_lock = threading.Lock()
+_query_timings: list[dict[str, object]] = []
+_materialization_started_at = 0.0
 REPORT_QUERY_WORKERS = 3
 FINDER_CHART_CSS = (
     ".finder-chart-grid{display:grid;grid-template-columns:repeat(auto-fit,"
@@ -39,6 +42,7 @@ def esc(value: object) -> str:
 
 
 def run_json(args: list[str], data_dir: Path) -> dict:
+    started_at = time.perf_counter()
     cache_path = _query_cache_path(args)
     cache_version = _query_cache_version(args)
     if cache_path is not None and cache_path.exists() and not _query_cache_rebuild:
@@ -50,6 +54,7 @@ def run_json(args: list[str], data_dir: Path) -> dict:
             raise RuntimeError(f"Mismatched report cache entry {cache_path}")
         with _query_cache_stats_lock:
             _query_cache_stats["hits"] += 1
+            _query_timings.append(_query_timing(args, True, started_at))
         return cached["payload"]
     with _query_cache_stats_lock:
         _query_cache_stats["misses"] += 1
@@ -70,7 +75,20 @@ def run_json(args: list[str], data_dir: Path) -> dict:
             json.dump(envelope, handle, separators=(",", ":"))
             temporary_path = Path(handle.name)
         os.replace(temporary_path, cache_path)
+    with _query_cache_stats_lock:
+        _query_timings.append(_query_timing(args, False, started_at))
     return payload
+
+
+def _query_timing(
+    args: list[str], cache_hit: bool, started_at: float
+) -> dict[str, object]:
+    return {
+        "view": " ".join(args[:2]),
+        "cache_hit": cache_hit,
+        "elapsed_seconds": round(time.perf_counter() - started_at, 3),
+        "args": args,
+    }
 
 
 def run_json_many(requests: list[list[str]], data_dir: Path) -> list[dict]:
@@ -87,12 +105,52 @@ def configure_query_cache(
     cache_dir: Path, source_config: Path, teams_config: Path, *, rebuild: bool = False
 ) -> None:
     global _query_cache_dir, _query_cache_context, _query_cache_rebuild
+    global _materialization_started_at
     _query_cache_dir = cache_dir
     _query_cache_context = hashlib.sha256(
         source_config.read_bytes() + b"\0" + teams_config.read_bytes()
     ).hexdigest()
     _query_cache_rebuild = rebuild
-    _query_cache_stats.update(hits=0, misses=0)
+    with _query_cache_stats_lock:
+        _query_cache_stats.update(hits=0, misses=0)
+        _query_timings.clear()
+    _materialization_started_at = time.perf_counter()
+
+
+def write_materialization_summary(cache_dir: Path) -> dict:
+    """Persist an atomic timing summary beside the resumable query cache."""
+    with _query_cache_stats_lock:
+        timings = list(_query_timings)
+        cache_stats = dict(_query_cache_stats)
+    grouped: dict[str, dict[str, float | int]] = {}
+    for timing in timings:
+        view = str(timing["view"])
+        bucket = grouped.setdefault(
+            view, {"count": 0, "hits": 0, "misses": 0, "elapsed_seconds": 0.0}
+        )
+        bucket["count"] += 1
+        bucket["hits" if timing["cache_hit"] else "misses"] += 1
+        bucket["elapsed_seconds"] += float(timing["elapsed_seconds"])
+    for bucket in grouped.values():
+        bucket["elapsed_seconds"] = round(float(bucket["elapsed_seconds"]), 3)
+    slowest = sorted(
+        timings, key=lambda timing: float(timing["elapsed_seconds"]), reverse=True
+    )[:10]
+    summary = {
+        "elapsed_seconds": round(time.perf_counter() - _materialization_started_at, 3),
+        "cache": cache_stats,
+        "views": dict(sorted(grouped.items())),
+        "slowest": slowest,
+    }
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    destination = cache_dir / "materialization.json"
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=cache_dir, delete=False
+    ) as handle:
+        json.dump(summary, handle, indent=2)
+        temporary_path = Path(handle.name)
+    os.replace(temporary_path, destination)
+    return summary
 
 
 def assemble_report_model(
@@ -535,6 +593,29 @@ def recent_team_pull_requests(
     return sorted(
         grouped.values(), key=lambda row: row.get("occurred_at") or "", reverse=True
     )[:limit]
+
+
+def classified_team_delivery(work: dict) -> list[dict]:
+    """Adapt team-work PR evidence for the compact recent-activity table."""
+    issue_urls = {
+        issue["jira_key"]: issue.get("url")
+        for issue in work.get("jira_issues", [])
+        if issue.get("jira_key")
+    }
+    rows = []
+    for record in work.get("github_records", []):
+        if record.get("record_type") != "pull_request":
+            continue
+        keys = record.get("jira_keys") or [None]
+        rows.extend(
+            {
+                **record,
+                "direct_jira_key": key,
+                "direct_jira_url": issue_urls.get(key),
+            }
+            for key in keys
+        )
+    return rows
 
 
 COMPLETION_RULE = (
@@ -1793,7 +1874,7 @@ def main() -> None:
     ], args.data_dir), strict=True))
     team_details = dict(zip(report_teams, run_json_many([
         [
-            "team", "get", name, "--snapshot", args.snapshot,
+            "team", "workflow", name, "--snapshot", args.snapshot,
             "--source-config", str(args.source_config),
             "--teams-config", str(args.teams_config),
         ]
@@ -1942,7 +2023,11 @@ def main() -> None:
             f'<li>{linked_jira_text(item, issue_urls)}</li>' for item in health_items
         ) + '</ul>'
         team_people = [person for person in people if person["display_name"] in team_members[name]]
-        activity_html = team_activity_tables(team_data["details"], team_people)
+        activity_detail = {
+            **team_data["details"],
+            "github_delivery": classified_team_delivery(team_data["work"]),
+        }
+        activity_html = team_activity_tables(activity_detail, team_people)
         notable_html = "".join(f'<li>{esc(item)}</li>' for item in notable) or '<li>No notable hygiene findings.</li>'
         team_href = f"#/teams/{slug(name)}"
         team_quick_links.append(
@@ -2119,7 +2204,8 @@ def main() -> None:
             dashboard["snapshot_id"],
         ),
     )
-    print(json.dumps({"output": str(args.output.resolve()), "snapshot_id": dashboard["snapshot_id"], "features": len(features), "people": len(people), "team_sections": len(team_detail_sections), "individual_sections": len(people), "report_cache": {"directory": str(cache_dir.resolve()), **_query_cache_stats}, "gaps": gaps,
+    materialization = write_materialization_summary(cache_dir)
+    print(json.dumps({"output": str(args.output.resolve()), "snapshot_id": dashboard["snapshot_id"], "features": len(features), "people": len(people), "team_sections": len(team_detail_sections), "individual_sections": len(people), "report_cache": {"directory": str(cache_dir.resolve()), **_query_cache_stats}, "materialization": materialization, "gaps": gaps,
         "completion": {
             "current_month": current_month,
             "current_month_done": month_done,
