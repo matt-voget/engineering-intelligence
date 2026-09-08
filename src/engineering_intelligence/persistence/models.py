@@ -163,6 +163,12 @@ class JiraRelationship(Base):
             "relationship_type",
             name="uq_jira_relationship",
         ),
+        Index(
+            "ix_jira_relationship_target_type_seen",
+            "target_issue_id",
+            "relationship_type",
+            "first_seen_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -183,6 +189,11 @@ class BoardMembershipObservation(Base):
     __tablename__ = "board_membership_observations"
     __table_args__ = (
         UniqueConstraint("board_id", "issue_id", "observed_at", name="uq_board_observation"),
+        Index(
+            "ix_board_membership_run_issue",
+            "ingestion_run_id",
+            "issue_id",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -352,6 +363,13 @@ class GitHubPullRequestCommit(Base):
 
 class GitHubReview(Base):
     __tablename__ = "github_reviews"
+    __table_args__ = (
+        Index(
+            "ix_github_review_pull_observed",
+            "pull_request_id",
+            "observed_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     pull_request_id: Mapped[str] = mapped_column(ForeignKey("github_pull_requests.id"))
@@ -371,6 +389,11 @@ class JiraGitHubRelationship(Base):
             "github_record_id",
             "relationship_type",
             name="uq_jira_github_relationship",
+        ),
+        Index(
+            "ix_jira_github_record",
+            "github_record_type",
+            "github_record_id",
         ),
     )
 

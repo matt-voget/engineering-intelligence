@@ -88,7 +88,11 @@ The query implementations explain the measured cost:
    to 3.35 seconds (47x) with byte-for-byte identical JSON; focused tests and Ruff pass.
    Shared cross-team context remains a possible follow-up only if the full cold
    benchmark shows it is still necessary.
-3. Implement and test bulk feature/team-detail assembly and individual-cache reuse.
+3. **In progress 2026-09-08:** Added report-path indexes for Jira hierarchy children,
+   IBR-board membership, GitHub reviews by pull request, and Jira links by GitHub
+   record. Migration and focused feature/team-work tests pass; live query output is
+   unchanged. Bulk feature/team-detail assembly remains pending measurement of the
+   indexed cold path.
 4. Add the report-bundle CLI and migrate the renderer while retaining atomic cache
    semantics.
 5. Run full verification and live cold/warm benchmarks; tune only from observed data.
