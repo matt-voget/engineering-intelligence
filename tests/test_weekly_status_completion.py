@@ -660,6 +660,9 @@ def test_issue_finder_embeds_completed_cycle_boundary_for_filtered_chart(generat
     assert 'class="multi-filter" data-finder-multi="issueStatus"' in html
     assert 'class="multi-filter" data-finder-multi="issueType"' in html
     assert 'data-issue-type="Story"' in html
+    assert "All statuses" in html and "All types" in html
+    assert html.count("data-multi-all") == 3
+    assert html.count("data-multi-none") == 3
     assert html.index("data-issue-finder-text") < html.index("data-issue-finder-chart")
     assert html.index("data-issue-date-from") < html.index("data-issue-finder-chart")
     assert html.index("weekly-chart-canvas") < html.index("data-issue-outlier-toggle")
@@ -674,6 +677,7 @@ def test_finder_charts_use_filtered_populations(generator):
     assert "echarts.init" in generator.JS
     assert "triggerOn:'mousemove|click'" in generator.JS
     assert "multiValues(control)" in generator.JS
+    assert "syncIssueMultiLabels" in generator.JS
     assert "renderGithubFinderChart" in generator.JS
     assert "const records=filtered.filter(row=>row.type==='pull_request'" in generator.JS
     assert "finderCharts();draw()" in generator.JS
