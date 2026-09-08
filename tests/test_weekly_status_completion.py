@@ -699,5 +699,6 @@ def test_finder_charts_use_filtered_populations(generator):
     assert "deferFinderSearch" in generator.JS
     assert "input.addEventListener('keydown'" in generator.JS
     assert "renderGithubFinderChart" in generator.JS
+    assert generator.JS.index("function formatHours") < generator.JS.index("function renderGithubFinderChart")
     assert "const records=filtered.filter(row=>row.type==='pull_request'" in generator.JS
     assert "finderCharts();draw()" in generator.JS
