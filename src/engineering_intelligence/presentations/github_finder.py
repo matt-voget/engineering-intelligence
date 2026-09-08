@@ -28,7 +28,9 @@ class GitHubFinderRecord(BaseModel):
     commit_count: int | None = None
     review_count: int | None = None
     reviewers: list[str] = Field(default_factory=list)
+    first_commit_at: datetime | None = None
     first_reviewed_at: datetime | None = None
+    coding_hours: float | None = None
     pickup_hours: float | None = None
     review_hours: float | None = None
     pull_requests: list[str] = Field(default_factory=list)

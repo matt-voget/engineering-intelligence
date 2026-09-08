@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+from engineering_intelligence.queries.github_finder import _coding_hours
 from engineering_intelligence.queries.github_pr_metrics import _author_in_scope, _measure
 
 
@@ -53,3 +54,10 @@ def test_author_scope_is_case_insensitive_and_requires_team_identity() -> None:
     assert _author_in_scope("TeamMember", {"teammember"}) is True
     assert _author_in_scope("outsider", {"teammember"}) is False
     assert _author_in_scope(None, {"teammember"}) is False
+
+
+def test_coding_hours_is_first_commit_to_pr_creation() -> None:
+    created = datetime(2026, 1, 2, tzinfo=UTC)
+    assert _coding_hours(created, created - timedelta(hours=30)) == 30.0
+    assert _coding_hours(created, created + timedelta(hours=1)) == 0.0
+    assert _coding_hours(created, None) is None

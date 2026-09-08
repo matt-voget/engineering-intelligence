@@ -141,6 +141,7 @@ def test_run_json_many_is_bounded_and_preserves_request_order(
 def test_team_work_cache_revision_is_selective(generator):
     assert generator._query_cache_version(["dashboard", "get"]) == "1"
     assert generator._query_cache_version(["team", "work", "A2A"]) == "1:2"
+    assert generator._query_cache_version(["github", "finder"]) == "1:2"
 
 
 def test_page_includes_snapshot_provenance(generator, monkeypatch):
@@ -598,6 +599,7 @@ def test_github_finder_embeds_compact_paged_records_and_controls(generator):
             "committed_at": None, "head_ref": "finder", "base_ref": "main",
             "commit_count": 2, "review_count": 1, "reviewers": ["reviewer"],
             "first_reviewed_at": "2026-08-01T12:00:00Z",
+            "first_commit_at": "2026-07-31T12:00:00Z", "coding_hours": 12.0,
             "pickup_hours": 12.0, "review_hours": 36.0,
             "pull_requests": [], "jira_keys": ["ENG-1"],
             "jira_urls": {"ENG-1": "https://jira/ENG-1"},
@@ -606,20 +608,26 @@ def test_github_finder_embeds_compact_paged_records_and_controls(generator):
     }, {"people": [
         {"github_login": "octocat", "current_teams": ["A2A"]},
         {"github_login": "reviewer", "current_teams": ["Foundations"]},
-    ]})
+    ]}, ["A2A", "Foundations", "Team with no records"])
     assert 'class="github-finder-table"' in html
-    assert 'data-gh-filter="repository"' in html
-    assert 'data-gh-filter="reviewer"' in html
-    assert 'data-gh-filter="authorTeam"' in html
-    assert 'data-gh-filter="reviewerTeam"' in html
+    assert 'data-gh-multi="repository"' in html
+    assert 'data-gh-multi="reviewer"' in html
+    assert 'data-gh-multi="team"' in html
+    assert "Team with no records" in html
+    assert "reviewerTeam" not in html
     assert 'class="column-manager github-column-manager"' in html
     assert 'id="github-finder-data"' in html
     assert "Ship finder" in html and "ENG-1" in html
     assert "pickupHours" in generator.JS and "PR pickup time" in generator.JS
     assert "reviewHours" in generator.JS and "PR review time" in generator.JS
+    assert "codingHours" in generator.JS and "PR coding time" in generator.JS
     assert "A2A" in html and "Foundations" in html
-    assert html.count("data-github-finder-chart=") == 2
-    assert "Weekly average from all filtered qualifying pull requests" in html
+    assert html.count("data-github-finder-chart=") == 3
+    assert html.count("data-gh-chart-average") == 3
+    assert html.count("data-gh-chart-trend") == 3
+    assert html.count("data-multi-all") == 7
+    assert html.count("data-multi-none") == 7
+    assert "data-gh-outlier-toggle" in html and "data-gh-outlier-rows" in html
     assert "github-filter-card" in html
     assert "data-gh-filter-chips" in html
     assert "data-gh-search" in html
@@ -671,6 +679,11 @@ def test_issue_finder_embeds_completed_cycle_boundary_for_filtered_chart(generat
     assert html.index("data-issue-date-from") < html.index("data-issue-finder-chart")
     assert html.index("weekly-chart-canvas") < html.index("data-issue-outlier-toggle")
     assert "data-issue-outlier-rows" in html
+
+
+def test_issue_finder_uses_full_configured_team_list(generator):
+    html = generator.issue_finder_section([], ["Team A", "Team B"])
+    assert "Team A" in html and "Team B" in html
 
 
 def test_finder_charts_use_filtered_populations(generator):

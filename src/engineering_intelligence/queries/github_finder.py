@@ -91,12 +91,29 @@ class GitHubFinderQuery:
                     GitHubPullRequestCommit.pull_request_id
                 ).where(GitHubPullRequestCommit.pull_request_id.in_(pull_numbers))).all():
                     commit_counts[pull_id] += 1
+                first_commits: dict[str, datetime] = {}
+                if pull_numbers:
+                    linked_commits = session.execute(
+                        select(GitHubPullRequestCommit.pull_request_id, GitHubCommit)
+                        .join(GitHubCommit, GitHubCommit.sha == GitHubPullRequestCommit.commit_sha)
+                        .where(
+                            GitHubPullRequestCommit.pull_request_id.in_(pull_numbers),
+                            GitHubCommit.repository_id == repository.id,
+                            GitHubCommit.first_seen_at <= high_water,
+                        )
+                    ).all()
+                    for pull_id, commit in linked_commits:
+                        committed = _utc(commit.authored_at or commit.committed_at)
+                        if committed is not None and (pull_id not in first_commits or committed < first_commits[pull_id]):
+                            first_commits[pull_id] = committed
                 for pull, version in pulls:
                     reviews = list(session.scalars(select(GitHubReview).where(
                         GitHubReview.pull_request_id == pull.id,
                         GitHubReview.observed_at <= high_water,
                     )).all())
                     measurement = _measure(version, reviews)
+                    created_at = _as_utc(version.source_created_at)
+                    first_commit_at = first_commits.get(pull.id)
                     jira_urls = relationships.get(("pull_request", pull.id), {})
                     records.append(GitHubFinderRecord(
                         record_key=f"pull-request:{pull.id}", record_type="pull_request",
@@ -104,13 +121,15 @@ class GitHubFinderQuery:
                         title=version.title, url=pull.html_url,
                         state="merged" if version.merged_at else version.state,
                         draft=version.draft, author_login=version.author_login,
-                        created_at=_as_utc(version.source_created_at),
+                        created_at=created_at,
                         updated_at=_as_utc(version.source_updated_at),
                         closed_at=_utc(version.closed_at), merged_at=_utc(version.merged_at),
                         head_ref=version.head_ref, base_ref=version.base_ref,
                         commit_count=commit_counts[pull.id], review_count=len(reviews),
                         reviewers=sorted({r.author_login for r in reviews if r.author_login}, key=str.casefold),
+                        first_commit_at=first_commit_at,
                         first_reviewed_at=measurement[0] if measurement else None,
+                        coding_hours=_coding_hours(created_at, first_commit_at),
                         pickup_hours=measurement[1] if measurement else None,
                         review_hours=measurement[2] if measurement else None,
                         jira_keys=sorted(jira_urls), jira_urls=jira_urls,
@@ -153,6 +172,12 @@ def _record_date(record: GitHubFinderRecord) -> datetime | None:
 
 def _utc(value: datetime | None) -> datetime | None:
     return _as_utc(value) if value is not None else None
+
+
+def _coding_hours(created_at: datetime, first_commit_at: datetime | None) -> float | None:
+    if first_commit_at is None:
+        return None
+    return max((created_at - first_commit_at).total_seconds() / 3600, 0.0)
 
 
 def _relationships(session: Session, record_keys, high_water):
