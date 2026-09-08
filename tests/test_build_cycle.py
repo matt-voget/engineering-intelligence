@@ -121,3 +121,18 @@ def test_workflow_cycle_metrics_is_running_and_identifies_skipped_steps() -> Non
     assert result.in_review_days == 0.0
     assert result.in_test_days == 3.0
     assert result.skipped_phases == ["In Code Review", "Ready for Test"]
+
+
+def test_workflow_cycle_metrics_ignores_phases_absent_from_issue_type_workflow() -> None:
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    result = workflow_cycle_metrics(
+        timeline(
+            transition(started, "To Do", "In Progress"),
+            transition(started + timedelta(days=2), "In Progress", "Done"),
+        ),
+        started + timedelta(days=5),
+        ["To Do", "In Progress", "Done"],
+    )
+
+    assert result is not None
+    assert result.skipped_phases == []

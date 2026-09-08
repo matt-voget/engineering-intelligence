@@ -660,10 +660,12 @@ def test_issue_finder_embeds_completed_cycle_boundary_for_filtered_chart(generat
     assert 'class="multi-filter" data-finder-multi="issueTeam"' in html
     assert 'class="multi-filter" data-finder-multi="issueStatus"' in html
     assert 'class="multi-filter" data-finder-multi="issueType"' in html
+    assert 'class="multi-filter" data-finder-multi="issueSkippedPhases"' in html
+    assert 'data-issue-skipped-phases="No skipped phases"' in html
     assert 'data-issue-type="Story"' in html
     assert "All statuses" in html and "All types" in html
-    assert html.count("data-multi-all") == 3
-    assert html.count("data-multi-none") == 3
+    assert html.count("data-multi-all") == 4
+    assert html.count("data-multi-none") == 4
     assert html.index("data-issue-finder-text") < html.index("data-issue-finder-chart")
     assert "data-issue-search" in html
     assert html.index("data-issue-date-from") < html.index("data-issue-finder-chart")

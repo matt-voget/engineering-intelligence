@@ -31,6 +31,28 @@ class JiraClient:
     def get_board_configuration(self, _board_id: int) -> dict[str, Any]:
         return json.loads((FIXTURES / "board_2168.json").read_text())
 
+    def get_project_statuses(self, project_key: str) -> list[dict[str, Any]]:
+        issue_types = {
+            "IDN": [
+                ("10000", "Epic"),
+                ("10001", "Story"),
+                ("10002", "Sub-task"),
+                ("10004", "Bug"),
+            ],
+            "ES": [("10004", "Bug")],
+        }[project_key]
+        return [
+            {
+                "id": issue_type_id,
+                "name": issue_type_name,
+                "statuses": [
+                    {"id": "3", "name": "In Progress"},
+                    {"id": "10001", "name": "Done"},
+                ],
+            }
+            for issue_type_id, issue_type_name in issue_types
+        ]
+
     def iter_board_issues(self, _board_id, *, fields=None) -> list[dict[str, Any]]:
         return [json.loads((FIXTURES / "issue_idn_1.json").read_text())]
 
@@ -42,7 +64,35 @@ class JiraClient:
         return [children[key] for key in parent_keys if key in children]
 
     def iter_issue_changelogs(self, _issue_ids_or_keys, *, field_ids=None):
-        return []
+        if "100002" not in _issue_ids_or_keys:
+            return []
+        return [{
+            "issueId": "100002",
+            "changeHistories": [
+                {
+                    "id": "started",
+                    "created": "2026-07-25T09:00:00+00:00",
+                    "items": [{
+                        "fieldId": "status",
+                        "from": "1",
+                        "fromString": "To Do",
+                        "to": "3",
+                        "toString": "In Progress",
+                    }],
+                },
+                {
+                    "id": "done",
+                    "created": "2026-07-27T09:00:00+00:00",
+                    "items": [{
+                        "fieldId": "status",
+                        "from": "3",
+                        "fromString": "In Progress",
+                        "to": "10001",
+                        "toString": "Done",
+                    }],
+                },
+            ],
+        }]
 
     def iter_jql_issues(self, _jql: str, *, fields=None):
         child = json.loads((FIXTURES / "issue_idn_2.json").read_text())
@@ -214,6 +264,7 @@ def test_team_work_classifies_jira_and_github_records(tmp_path: Path) -> None:
     assert issues["IDN-2"].link_basis == "descendant_of_ibr_item"
     assert issues["IDN-2"].ibr_parent_key == "IDN-1"
     assert issues["IDN-2"].assignee_display_name == "Alex Kim"
+    assert issues["IDN-2"].skipped_phases == []
     # The pull request keyed to IDN-2 surfaces on the issue row.
     assert [pull.record_id for pull in issues["IDN-2"].linked_pull_requests] == [
         "gravitee-io/example#17"

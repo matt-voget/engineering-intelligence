@@ -25,6 +25,7 @@ from engineering_intelligence.persistence.models import (
     JiraRelationship,
     JiraScopeObservation,
     JiraStatusTransition,
+    JiraWorkflowObservation,
     RawPayload,
 )
 from engineering_intelligence.queries.metrics import MetricsQuery
@@ -69,6 +70,24 @@ class FixtureJiraClient:
     def get_board_configuration(self, board_id: int) -> dict[str, Any]:
         assert board_id == 2168
         return self.board
+
+    def get_project_statuses(self, project_key: str) -> list[dict[str, Any]]:
+        assert project_key == "IDN"
+        return [
+            {
+                "id": issue_type_id,
+                "name": issue_type_name,
+                "statuses": [
+                    {"id": "3", "name": "In Progress"},
+                    {"id": "10001", "name": "Done"},
+                ],
+            }
+            for issue_type_id, issue_type_name in (
+                ("10000", "Epic"),
+                ("10001", "Story"),
+                ("10002", "Sub-task"),
+            )
+        ]
 
     def iter_board_issues(
         self,
@@ -252,6 +271,7 @@ def test_ingestion_is_historical_and_idempotent(tmp_path: Path) -> None:
         } == {issue.id}
         assert session.scalar(select(func.count()).select_from(BoardColumn)) == 4
         assert session.scalar(select(func.count()).select_from(JiraRelationship)) == 5
+        assert session.scalar(select(func.count()).select_from(JiraWorkflowObservation)) == 6
         assert session.scalar(select(func.count()).select_from(JiraIssue)) == 3
         transitions = session.scalars(
             select(JiraStatusTransition).order_by(JiraStatusTransition.changed_at)

@@ -27,6 +27,7 @@ from engineering_intelligence.persistence.models import (
     JiraIssue,
     JiraIssueVersion,
     JiraScopeObservation,
+    JiraWorkflowObservation,
     SnapshotSourceState,
 )
 from engineering_intelligence.presentations.team_work import (
@@ -171,6 +172,17 @@ class TeamWorkQuery:
             jira_available = team_state is not None and team_state.ingestion_run_id is not None
             if jira_available:
                 high_water = _as_utc(team_state.high_water_mark)
+                workflow_statuses = {
+                    (item.project_key, item.issue_type_id): [
+                        status["name"] for status in item.statuses
+                    ]
+                    for item in session.scalars(
+                        select(JiraWorkflowObservation).where(
+                            JiraWorkflowObservation.ingestion_run_id
+                            == team_state.ingestion_run_id
+                        )
+                    )
+                }
                 list_floor = snapshot_at - timedelta(days=LIST_WINDOW_DAYS)
                 population = list(
                     session.scalars(
@@ -202,7 +214,11 @@ class TeamWorkQuery:
                     )
                     timeline = _timeline(session, issue_id, high_water)
                     cycle_metrics = (
-                        workflow_cycle_metrics(timeline, high_water)
+                        workflow_cycle_metrics(
+                            timeline,
+                            high_water,
+                            workflow_statuses.get((issue.project_key, version.issue_type_id)),
+                        )
                         if timeline is not None
                         else None
                     )

@@ -309,8 +309,9 @@ WORKFLOW_PHASES = (
 def workflow_cycle_metrics(
     timeline: _Timeline,
     as_of: datetime,
+    workflow_statuses: list[str] | None = None,
 ) -> WorkflowCycleMetrics | None:
-    """Measure the pictured delivery workflow through Done or the snapshot boundary."""
+    """Measure the applicable Jira workflow phases through Done or snapshot boundary."""
     started = next(
         (
             _as_utc(transition.changed_at)
@@ -361,11 +362,21 @@ def workflow_cycle_metrics(
     if cursor < ended:
         totals[_canonical(status)] += (ended - cursor).total_seconds() / 86400
 
-    phase_keys = [_canonical(phase) for phase in WORKFLOW_PHASES]
+    applicable = (
+        {_canonical(status) for status in workflow_statuses}
+        if workflow_statuses is not None
+        else None
+    )
+    phases = [
+        phase
+        for phase in WORKFLOW_PHASES
+        if applicable is None or _canonical(phase) in applicable
+    ]
+    phase_keys = [_canonical(phase) for phase in phases]
     reached = [index for index, phase in enumerate(phase_keys) if phase in visited]
     furthest = max(reached, default=0)
     skipped = [
-        WORKFLOW_PHASES[index]
+        phases[index]
         for index in range(1, furthest)
         if phase_keys[index] not in visited
     ]

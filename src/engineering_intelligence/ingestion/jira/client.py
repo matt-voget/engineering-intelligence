@@ -46,6 +46,10 @@ class JiraClient:
     def get_board_configuration(self, board_id: int) -> dict[str, Any]:
         return self._get_json(f"/rest/agile/1.0/board/{board_id}/configuration")
 
+    def get_project_statuses(self, project_key: str) -> list[dict[str, Any]]:
+        """Return live workflow statuses grouped by issue type for one project."""
+        return self._get_json(f"/rest/api/3/project/{project_key}/statuses")
+
     def iter_board_issues(
         self,
         board_id: int,

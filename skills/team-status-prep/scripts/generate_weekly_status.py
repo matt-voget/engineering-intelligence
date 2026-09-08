@@ -1073,7 +1073,12 @@ def issue_finder_section(issues: list[dict]) -> str:
         )
 
     def multi_filter(label: str, field: str, values: list[str]) -> str:
-        plural = {"Status": "statuses", "Type": "types", "Team": "teams"}[label]
+        plural = {
+            "Status": "statuses",
+            "Type": "types",
+            "Team": "teams",
+            "Skipped phases": "options",
+        }[label]
         choices = "".join(
             f'<label><input type="checkbox" value="{esc(value)}">'
             f'<span>{esc(value)}</span></label>'
@@ -1101,6 +1106,11 @@ def issue_finder_section(issues: list[dict]) -> str:
         + multi_filter("Team", "issueTeam", teams)
         + multi_filter("Status", "issueStatus", statuses)
         + multi_filter("Type", "issueType", issue_types)
+        + multi_filter(
+            "Skipped phases",
+            "issueSkippedPhases",
+            ["Has skipped phases", "No skipped phases"],
+        )
         + '<label>Classification <select data-finder-field="issueClassification"><option value="">All classifications</option>'
         f'{options(classifications, {"ibr_linked": "IBR-linked", "non_ibr": "Non-IBR"})}</select></label>'
         '<label>Highlight <select data-finder-attention><option value="">All rows</option>'
@@ -1173,6 +1183,7 @@ def issue_finder_section(issues: list[dict]) -> str:
         data-issue-team="{esc(item['team_name'])}"
         data-issue-status="{esc(item.get('status') or 'Unknown')}"
         data-issue-type="{esc(item.get('issue_type') or 'Unknown')}"
+        data-issue-skipped-phases="{'Has skipped phases' if item.get('skipped_phases') else 'No skipped phases'}"
         data-issue-classification="{esc(item.get('classification') or 'unknown')}"
         data-cycle-ended="{date_attr(item.get('cycle_ended_at'))}"
         data-total-cycle-days="{item.get('total_cycle_days') if item.get('cycle_ended_at') and item.get('total_cycle_days') is not None else ''}">

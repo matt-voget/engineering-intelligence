@@ -221,6 +221,26 @@ class JiraScopeObservation(Base):
     ingestion_run_id: Mapped[str] = mapped_column(ForeignKey("ingestion_runs.id"))
 
 
+class JiraWorkflowObservation(Base):
+    __tablename__ = "jira_workflow_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "ingestion_run_id",
+            "project_key",
+            "issue_type_id",
+            name="uq_jira_workflow_run_project_type",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    ingestion_run_id: Mapped[str] = mapped_column(ForeignKey("ingestion_runs.id"))
+    project_key: Mapped[str] = mapped_column(String(64))
+    issue_type_id: Mapped[str] = mapped_column(String(64))
+    issue_type_name: Mapped[str] = mapped_column(String(255))
+    statuses: Mapped[list[dict[str, str]]] = mapped_column(JSON)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class SyncCursor(Base):
     __tablename__ = "sync_cursors"
 

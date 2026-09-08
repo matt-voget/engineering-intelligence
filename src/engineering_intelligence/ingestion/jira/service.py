@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from engineering_intelligence.persistence.models import (
     JiraRelationship,
     JiraScopeObservation,
     JiraStatusTransition,
+    JiraWorkflowObservation,
     RawPayload,
 )
 
@@ -51,6 +53,8 @@ class JiraIngestionService:
         self.hierarchy_max_depth = hierarchy_max_depth
         self.hierarchy_batch_size = hierarchy_batch_size
         self.issue_locks = issue_locks or StripedLock()
+        self._workflow_cache: dict[str, list[dict[str, Any]]] = {}
+        self._workflow_cache_lock = Lock()
 
     def ingest_board(
         self,
@@ -160,6 +164,7 @@ class JiraIngestionService:
             )
             seen += changelog_seen
             changed += changelog_changed
+            self._record_workflow_observations(run_id, seen_issue_ids, observed_at)
             with self.sessions.begin() as session:
                 run = session.get(IngestionRun, run_id)
                 assert run is not None
@@ -261,6 +266,7 @@ class JiraIngestionService:
             )
             seen += transition_seen
             changed += transition_changed
+            self._record_workflow_observations(run_id, issue_ids, observed_at)
             with self.sessions.begin() as session:
                 run = session.get(IngestionRun, run_id)
                 assert run is not None
@@ -503,6 +509,65 @@ class JiraIngestionService:
                     request_context=request_context,
                 )
             )
+
+    def _record_workflow_observations(
+        self,
+        run_id: str,
+        issue_ids: set[str],
+        observed_at: datetime,
+    ) -> None:
+        if not issue_ids or not hasattr(self.client, "get_project_statuses"):
+            return
+        with self.sessions() as session:
+            represented = session.execute(
+                select(
+                    JiraIssue.project_key,
+                    JiraIssueVersion.issue_type_id,
+                    JiraIssueVersion.issue_type_name,
+                )
+                .join(
+                    JiraIssueVersion,
+                    (JiraIssueVersion.issue_id == JiraIssue.id)
+                    & (JiraIssueVersion.version_hash == JiraIssue.current_version_hash),
+                )
+                .where(JiraIssue.id.in_(issue_ids))
+                .distinct()
+            ).all()
+        by_project: dict[str, dict[str, str]] = {}
+        for project_key, issue_type_id, issue_type_name in represented:
+            if issue_type_id and issue_type_name:
+                by_project.setdefault(project_key, {})[issue_type_id] = issue_type_name
+        observations: list[JiraWorkflowObservation] = []
+        for project_key, issue_types in sorted(by_project.items()):
+            with self._workflow_cache_lock:
+                payload = self._workflow_cache.get(project_key)
+                if payload is None:
+                    payload = self.client.get_project_statuses(project_key)
+                    self._workflow_cache[project_key] = payload
+            available = {str(item["id"]): item for item in payload}
+            for issue_type_id, issue_type_name in sorted(issue_types.items()):
+                workflow = available.get(issue_type_id)
+                if workflow is None:
+                    raise ValueError(
+                        f"Jira workflow statuses omitted {project_key} issue type "
+                        f"{issue_type_name} ({issue_type_id})"
+                    )
+                observations.append(
+                    JiraWorkflowObservation(
+                        id=str(uuid4()),
+                        ingestion_run_id=run_id,
+                        project_key=project_key,
+                        issue_type_id=issue_type_id,
+                        issue_type_name=issue_type_name,
+                        statuses=[
+                            {"id": str(status["id"]), "name": str(status["name"])}
+                            for status in workflow.get("statuses", [])
+                        ],
+                        observed_at=observed_at,
+                    )
+                )
+        with self.sessions.begin() as session:
+            session.add_all(observations)
 
     def _upsert_board(
         self,

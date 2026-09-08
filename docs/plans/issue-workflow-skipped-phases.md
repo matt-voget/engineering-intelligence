@@ -26,8 +26,10 @@ multi-select for skipped phases.
    workflow-scheme assignments, and 50 live workflow definitions. Confirmed the current
    fixed six-phase assumption produces false skipped-phase labels for workflow families
    that omit review, test, or documentation phases.
-2. **Next:** Add snapshot-safe Jira workflow observations and consume them in build-cycle
-   calculation.
-3. Add the Issue Finder skipped-phase multi-select and renderer tests.
-4. Run repository validation, complete a fresh refresh, generate the report, inspect the
+2. **Complete:** Added snapshot-safe Jira workflow observations and consumed the exact
+   project/issue-type status set from each snapshot-pinned ingestion run in build-cycle
+   calculation. Legacy snapshots retain the previous fallback.
+3. **Complete:** Added an All/None Issue Finder multi-select for issues with or without
+   skipped phases, plus workflow applicability, ingestion, query, API, and renderer tests.
+4. **Next:** Run repository validation, complete a fresh refresh, generate the report, inspect the
    live result, commit, push, and deliver it.

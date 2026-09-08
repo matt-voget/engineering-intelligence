@@ -3,6 +3,28 @@ import httpx
 from engineering_intelligence.ingestion.jira.client import JiraClient
 
 
+def test_project_statuses_returns_issue_type_workflow_statuses() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=[{"id": "10001", "name": "Story", "statuses": []}],
+        )
+
+    with JiraClient(
+        "https://example.atlassian.net",
+        "owner@example.com",
+        "token",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        statuses = client.get_project_statuses("IDN")
+
+    assert statuses[0]["name"] == "Story"
+    assert requests[0].url.path == "/rest/api/3/project/IDN/statuses"
+
+
 def test_child_search_uses_bounded_enhanced_jql_pagination() -> None:
     requests: list[httpx.Request] = []
 
