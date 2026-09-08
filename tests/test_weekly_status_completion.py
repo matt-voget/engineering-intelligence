@@ -622,6 +622,7 @@ def test_github_finder_embeds_compact_paged_records_and_controls(generator):
     assert "Weekly average from all filtered qualifying pull requests" in html
     assert "github-filter-card" in html
     assert "data-gh-filter-chips" in html
+    assert "data-gh-search" in html
 
 
 def test_issue_finder_embeds_completed_cycle_boundary_for_filtered_chart(generator):
@@ -664,6 +665,7 @@ def test_issue_finder_embeds_completed_cycle_boundary_for_filtered_chart(generat
     assert html.count("data-multi-all") == 3
     assert html.count("data-multi-none") == 3
     assert html.index("data-issue-finder-text") < html.index("data-issue-finder-chart")
+    assert "data-issue-search" in html
     assert html.index("data-issue-date-from") < html.index("data-issue-finder-chart")
     assert html.index("weekly-chart-canvas") < html.index("data-issue-outlier-toggle")
     assert "data-issue-outlier-rows" in html
@@ -678,6 +680,9 @@ def test_finder_charts_use_filtered_populations(generator):
     assert "triggerOn:'mousemove|click'" in generator.JS
     assert "multiValues(control)" in generator.JS
     assert "syncIssueMultiLabels" in generator.JS
+    assert "values.join(', ')" in generator.JS
+    assert "deferFinderSearch" in generator.JS
+    assert "input.addEventListener('keydown'" in generator.JS
     assert "renderGithubFinderChart" in generator.JS
     assert "const records=filtered.filter(row=>row.type==='pull_request'" in generator.JS
     assert "finderCharts();draw()" in generator.JS
