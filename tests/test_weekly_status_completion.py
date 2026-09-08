@@ -141,7 +141,7 @@ def test_run_json_many_is_bounded_and_preserves_request_order(
 def test_team_work_cache_revision_is_selective(generator):
     assert generator._query_cache_version(["dashboard", "get"]) == "1"
     assert generator._query_cache_version(["team", "work", "A2A"]) == "1:2"
-    assert generator._query_cache_version(["github", "finder"]) == "1:3"
+    assert generator._query_cache_version(["github", "finder"]) == "1:5"
 
 
 def test_page_includes_snapshot_provenance(generator, monkeypatch):
@@ -635,6 +635,7 @@ def test_github_finder_embeds_compact_paged_records_and_controls(generator):
     assert 'data-gh-multi="teamMapping"' in html
     assert "Mapped to a Jira team" in html and "Not mapped to a Jira team" in html
     assert "Mapped person" in generator.JS and "Mapped team(s)" in generator.JS
+    assert "Coding basis" in generator.JS
     assert "github-filter-card" in html
     assert "data-gh-filter-chips" in html
     assert "data-gh-search" in html

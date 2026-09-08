@@ -29,6 +29,8 @@ class GitHubFinderRecord(BaseModel):
     review_count: int | None = None
     reviewers: list[str] = Field(default_factory=list)
     first_commit_at: datetime | None = None
+    coding_time_basis: str | None = None
+    coding_jira_key: str | None = None
     first_reviewed_at: datetime | None = None
     coding_hours: float | None = None
     pickup_hours: float | None = None

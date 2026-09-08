@@ -1,5 +1,6 @@
 """Snapshot-safe organization-wide pull-request and commit finder."""
 
+import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -38,19 +39,21 @@ class GitHubFinderQuery:
             repository_names = sorted(r.full_name for r in source_config.github.repositories)
             states = {
                 state.scope.removeprefix("repository:"): state
-                for state in session.scalars(select(SnapshotSourceState).where(
-                    SnapshotSourceState.snapshot_id == snapshot.id,
-                    SnapshotSourceState.source == "github",
-                )).all()
+                for state in session.scalars(
+                    select(SnapshotSourceState).where(
+                        SnapshotSourceState.snapshot_id == snapshot.id,
+                        SnapshotSourceState.source == "github",
+                    )
+                ).all()
                 if state.scope.startswith("repository:")
             }
             records: list[GitHubFinderRecord] = []
             missing: list[str] = []
             for repository_name in repository_names:
                 state = states.get(repository_name)
-                repository = session.scalar(select(GitHubRepository).where(
-                    GitHubRepository.full_name == repository_name
-                ))
+                repository = session.scalar(
+                    select(GitHubRepository).where(GitHubRepository.full_name == repository_name)
+                )
                 if state is None or repository is None:
                     missing.append(repository_name)
                     continue
@@ -67,18 +70,22 @@ class GitHubFinderQuery:
                 pulls = session.execute(
                     select(GitHubPullRequest, GitHubPullRequestVersion)
                     .join(latest, latest.c.pull_request_id == GitHubPullRequest.id)
-                    .join(GitHubPullRequestVersion,
+                    .join(
+                        GitHubPullRequestVersion,
                         (GitHubPullRequestVersion.pull_request_id == GitHubPullRequest.id)
-                        & (GitHubPullRequestVersion.observed_at == latest.c.observed_at))
+                        & (GitHubPullRequestVersion.observed_at == latest.c.observed_at),
+                    )
                     .where(GitHubPullRequest.repository_id == repository.id)
                 ).all()
                 pull_numbers = {pull.id: f"#{pull.number}" for pull, _ in pulls}
                 commit_links: dict[str, list[str]] = defaultdict(list)
                 if pull_numbers:
-                    for pull_id, commit_sha in session.execute(select(
-                        GitHubPullRequestCommit.pull_request_id,
-                        GitHubPullRequestCommit.commit_sha,
-                    ).where(GitHubPullRequestCommit.pull_request_id.in_(pull_numbers))):
+                    for pull_id, commit_sha in session.execute(
+                        select(
+                            GitHubPullRequestCommit.pull_request_id,
+                            GitHubPullRequestCommit.commit_sha,
+                        ).where(GitHubPullRequestCommit.pull_request_id.in_(pull_numbers))
+                    ):
                         commit_links[commit_sha].append(pull_numbers[pull_id])
                 relationships = _relationships(
                     session,
@@ -87,11 +94,13 @@ class GitHubFinderQuery:
                     high_water,
                 )
                 commit_counts = defaultdict(int)
-                for pull_id in session.scalars(select(
-                    GitHubPullRequestCommit.pull_request_id
-                ).where(GitHubPullRequestCommit.pull_request_id.in_(pull_numbers))).all():
+                for pull_id in session.scalars(
+                    select(GitHubPullRequestCommit.pull_request_id).where(
+                        GitHubPullRequestCommit.pull_request_id.in_(pull_numbers)
+                    )
+                ).all():
                     commit_counts[pull_id] += 1
-                first_commits: dict[str, datetime] = {}
+                commits_by_pull: dict[str, list[GitHubCommit]] = defaultdict(list)
                 if pull_numbers:
                     linked_commits = session.execute(
                         select(GitHubPullRequestCommit.pull_request_id, GitHubCommit)
@@ -103,66 +112,104 @@ class GitHubFinderQuery:
                         )
                     ).all()
                     for pull_id, commit in linked_commits:
-                        committed = _commit_boundary(commit)
-                        if committed is not None and (pull_id not in first_commits or committed < first_commits[pull_id]):
-                            first_commits[pull_id] = committed
+                        commits_by_pull[pull_id].append(commit)
                 for pull, version in pulls:
-                    reviews = list(session.scalars(select(GitHubReview).where(
-                        GitHubReview.pull_request_id == pull.id,
-                        GitHubReview.observed_at <= high_water,
-                    )).all())
+                    reviews = list(
+                        session.scalars(
+                            select(GitHubReview).where(
+                                GitHubReview.pull_request_id == pull.id,
+                                GitHubReview.observed_at <= high_water,
+                            )
+                        ).all()
+                    )
                     measurement = _measure(version, reviews)
                     created_at = _as_utc(version.source_created_at)
-                    first_commit_at = first_commits.get(pull.id)
                     jira_urls = relationships.get(("pull_request", pull.id), {})
-                    records.append(GitHubFinderRecord(
-                        record_key=f"pull-request:{pull.id}", record_type="pull_request",
-                        repository=repository_name, identifier=f"#{pull.number}",
-                        title=version.title, url=pull.html_url,
-                        state="merged" if version.merged_at else version.state,
-                        draft=version.draft, author_login=version.author_login,
-                        created_at=created_at,
-                        updated_at=_as_utc(version.source_updated_at),
-                        closed_at=_utc(version.closed_at), merged_at=_utc(version.merged_at),
-                        head_ref=version.head_ref, base_ref=version.base_ref,
-                        commit_count=commit_counts[pull.id], review_count=len(reviews),
-                        reviewers=sorted({r.author_login for r in reviews if r.author_login}, key=str.casefold),
-                        first_commit_at=first_commit_at,
-                        first_reviewed_at=measurement[0] if measurement else None,
-                        coding_hours=_coding_hours(created_at, first_commit_at),
-                        pickup_hours=measurement[1] if measurement else None,
-                        review_hours=measurement[2] if measurement else None,
-                        jira_keys=sorted(jira_urls), jira_urls=jira_urls,
-                    ))
+                    first_commit_at, coding_basis, coding_jira_key = _coding_boundary(
+                        version, commits_by_pull[pull.id], set(jira_urls)
+                    )
+                    records.append(
+                        GitHubFinderRecord(
+                            record_key=f"pull-request:{pull.id}",
+                            record_type="pull_request",
+                            repository=repository_name,
+                            identifier=f"#{pull.number}",
+                            title=version.title,
+                            url=pull.html_url,
+                            state="merged" if version.merged_at else version.state,
+                            draft=version.draft,
+                            author_login=version.author_login,
+                            created_at=created_at,
+                            updated_at=_as_utc(version.source_updated_at),
+                            closed_at=_utc(version.closed_at),
+                            merged_at=_utc(version.merged_at),
+                            head_ref=version.head_ref,
+                            base_ref=version.base_ref,
+                            commit_count=commit_counts[pull.id],
+                            review_count=len(reviews),
+                            reviewers=sorted(
+                                {r.author_login for r in reviews if r.author_login},
+                                key=str.casefold,
+                            ),
+                            first_commit_at=first_commit_at,
+                            coding_time_basis=coding_basis,
+                            coding_jira_key=coding_jira_key,
+                            first_reviewed_at=measurement[0] if measurement else None,
+                            coding_hours=_coding_hours(created_at, first_commit_at),
+                            pickup_hours=measurement[1] if measurement else None,
+                            review_hours=measurement[2] if measurement else None,
+                            jira_keys=sorted(jira_urls),
+                            jira_urls=jira_urls,
+                        )
+                    )
                 if commit_links:
-                    commits = session.scalars(select(GitHubCommit).where(
-                        GitHubCommit.repository_id == repository.id,
-                        GitHubCommit.first_seen_at <= high_water,
-                        GitHubCommit.sha.in_(commit_links),
-                    )).all()
+                    commits = session.scalars(
+                        select(GitHubCommit).where(
+                            GitHubCommit.repository_id == repository.id,
+                            GitHubCommit.first_seen_at <= high_water,
+                            GitHubCommit.sha.in_(commit_links),
+                        )
+                    ).all()
                     for commit in commits:
                         jira_urls = relationships.get(("commit", commit.sha), {})
-                        records.append(GitHubFinderRecord(
-                            record_key=f"commit:{repository_name}:{commit.sha}",
-                            record_type="commit", repository=repository_name,
-                            identifier=commit.sha[:8], title=commit.message.splitlines()[0],
-                            url=commit.html_url, author_login=commit.author_login or commit.author_name,
-                            authored_at=_utc(commit.authored_at), committed_at=_utc(commit.committed_at),
-                            pull_requests=sorted(commit_links[commit.sha]),
-                            jira_keys=sorted(jira_urls), jira_urls=jira_urls,
-                        ))
-            records.sort(key=lambda row: (
-                -int((_record_date(row) or _as_utc(snapshot.created_at)).timestamp()),
-                row.record_type, row.repository, row.identifier,
-            ))
-            notes = ["Commits are associated with ingested pull requests; the source does not crawl every default-branch commit independently."]
+                        records.append(
+                            GitHubFinderRecord(
+                                record_key=f"commit:{repository_name}:{commit.sha}",
+                                record_type="commit",
+                                repository=repository_name,
+                                identifier=commit.sha[:8],
+                                title=commit.message.splitlines()[0],
+                                url=commit.html_url,
+                                author_login=commit.author_login or commit.author_name,
+                                authored_at=_utc(commit.authored_at),
+                                committed_at=_utc(commit.committed_at),
+                                pull_requests=sorted(commit_links[commit.sha]),
+                                jira_keys=sorted(jira_urls),
+                                jira_urls=jira_urls,
+                            )
+                        )
+            records.sort(
+                key=lambda row: (
+                    -int((_record_date(row) or _as_utc(snapshot.created_at)).timestamp()),
+                    row.record_type,
+                    row.repository,
+                    row.identifier,
+                )
+            )
+            notes = [
+                "Commits are associated with ingested pull requests; the source does not crawl every default-branch commit independently."
+            ]
             if missing:
                 notes.append("Missing pinned GitHub source state: " + ", ".join(missing))
             return GitHubFinderView(
-                snapshot_id=snapshot.id, snapshot_name=snapshot.name or snapshot.id,
+                snapshot_id=snapshot.id,
+                snapshot_name=snapshot.name or snapshot.id,
                 snapshot_created_at=_as_utc(snapshot.created_at),
-                source_freshness={name: _as_utc(state.high_water_mark) for name, state in states.items()},
-                records=records, data_quality_notes=notes,
+                source_freshness={
+                    name: _as_utc(state.high_water_mark) for name, state in states.items()
+                },
+                records=records,
+                data_quality_notes=notes,
             )
 
 
@@ -182,6 +229,36 @@ def _coding_hours(created_at: datetime, first_commit_at: datetime | None) -> flo
 
 def _commit_boundary(commit: GitHubCommit) -> datetime | None:
     return _utc(commit.committed_at)
+
+
+JIRA_KEY = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_]+-\d+)(?!\d)")
+
+
+def _coding_boundary(version, commits, linked_jira_keys: set[str]):
+    primary_key = next(
+        (
+            key
+            for text in (version.title, version.head_ref, version.body or "")
+            for key in JIRA_KEY.findall((text or "").upper())
+            if key in linked_jira_keys
+        ),
+        None,
+    )
+    candidates = commits
+    basis = "fallback_no_primary_jira"
+    if primary_key:
+        matching = [
+            commit
+            for commit in commits
+            if primary_key in JIRA_KEY.findall((commit.message or "").upper())
+        ]
+        if matching:
+            candidates = matching
+            basis = "primary_jira_key"
+        else:
+            basis = "fallback_no_matching_jira_commit"
+    timestamps = [value for commit in candidates if (value := _commit_boundary(commit))]
+    return (min(timestamps), basis, primary_key) if timestamps else (None, None, primary_key)
 
 
 def _relationships(session: Session, record_keys, high_water):
