@@ -29,6 +29,8 @@ _query_cache_stats = {"hits": 0, "misses": 0}
 _query_cache_stats_lock = threading.Lock()
 _query_timings: list[dict[str, object]] = []
 _materialization_started_at = 0.0
+# Snapshot queries are read-only. Keep independent view materialization bounded so
+# SQLite remains responsive while the bulk feature path avoids process fan-out.
 REPORT_QUERY_WORKERS = 3
 FINDER_CHART_CSS = (
     ".finder-chart-grid{display:grid;grid-template-columns:repeat(auto-fit,"
@@ -1905,9 +1907,6 @@ def main() -> None:
         for item in [*row.get("in_progress", []), *row.get("ready_for_build", [])]
     }
     item_keys = sorted(items)
-    features = dict(zip(item_keys, run_json_many([
-        ["feature", "get", key, "--snapshot", args.snapshot] for key in item_keys
-    ], args.data_dir), strict=True))
     people = []
     gaps = [
         "Literal GitHub Issues and their descriptions are not ingested; GitHub evidence is limited to pull requests, commits, and reviews."
@@ -1937,19 +1936,25 @@ def main() -> None:
         if item.get("jira_key")
         and TARGET_MONTH_RE.match(item.get("target_date_value") or "")
     })
-    hierarchies = {}
-    missing_hierarchy_keys = [key for key in dated_keys if key not in features]
-    missing_hierarchies = run_json_many([
-        ["feature", "get", key, "--snapshot", args.snapshot]
-        for key in missing_hierarchy_keys
-    ], args.data_dir)
+    all_feature_keys = sorted(set(item_keys) | set(dated_keys))
+    feature_payload = run_json(
+        [
+            "feature",
+            "get-many",
+            "--snapshot",
+            args.snapshot,
+            *(
+                argument
+                for key in all_feature_keys
+                for argument in ("--issue-key", key)
+            ),
+        ],
+        args.data_dir,
+    )
+    features = {key: feature_payload[key] for key in item_keys}
     hierarchies = {
-        key: features[key]["hierarchy"] for key in dated_keys if key in features
+        key: feature_payload[key]["hierarchy"] for key in dated_keys
     }
-    hierarchies.update({
-        key: payload["hierarchy"]
-        for key, payload in zip(missing_hierarchy_keys, missing_hierarchies, strict=True)
-    })
     team_completion = {
         name: completion_by_target_date(detail, hierarchies)
         for name, detail in team_details.items()

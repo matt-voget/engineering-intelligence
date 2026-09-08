@@ -102,13 +102,18 @@ The query implementations explain the measured cost:
 5. **Complete 2026-09-08:** Added a lightweight snapshot-pinned `team workflow` view for
    the workflow and roster data the renderer consumes. The live AM query fell from 40.8
    to 12.1 seconds, and parity tests verify its workflow and roster against `team get`.
-6. Add the report-bundle CLI and migrate the renderer while retaining atomic cache
-   semantics.
+6. **Complete 2026-09-08:** The first instrumented cold run finished in 961 seconds
+   (16.0 minutes), with 279 isolated `feature get` processes accounting for 1,618
+   aggregate seconds. Added `feature get-many` and changed the renderer to materialize
+   the union of active and target-dated feature hierarchies in one snapshot-pinned
+   process and one atomic cache entry. A six-worker experiment did not improve
+   throughput because SQLite contention offset the extra parallelism, so the bounded
+   worker count remains three.
 7. Run full verification and live cold/warm benchmarks; tune only from observed data.
 8. Update this plan with measured results, commit and push the completed work, and
    generate a fresh report through the optimized path.
 
 ## Exact next action
 
-Commit and push the completed metric, workflow, and timing checkpoint, then run a new
-isolated-cache cold benchmark to decide whether a report-bundle path is still needed.
+Commit and push the bulk feature checkpoint, then run a new isolated-cache cold
+benchmark and its cache-only rerender.

@@ -850,6 +850,36 @@ def feature_get(
         typer.echo(rendered)
 
 
+@feature_app.command("get-many")
+def feature_get_many(
+    issue_keys: Annotated[
+        list[str],
+        typer.Option("--issue-key", help="IBR Jira issue key; repeat for each item."),
+    ],
+    snapshot: Annotated[
+        str,
+        typer.Option("--snapshot", help="Snapshot ID or unique snapshot name."),
+    ],
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="Output format: json."),
+    ] = "json",
+    data_dir: DataDir = None,
+) -> None:
+    """Render multiple Feature details in one database process."""
+    if output_format != "json":
+        raise typer.BadParameter("Expected json", param_hint="--format")
+    paths = runtime_paths(data_dir)
+    upgrade_database(paths.database)
+    sessions = session_factory(create_sqlite_engine(paths.database))
+    query = FeatureQuery(sessions)
+    payload = {
+        issue_key.upper(): query.get(snapshot, issue_key.upper()).model_dump(mode="json")
+        for issue_key in sorted(set(issue_keys))
+    }
+    typer.echo(json.dumps(payload, indent=2))
+
+
 @team_app.command("brief")
 def team_brief(
     team_identifier: Annotated[str, typer.Argument(help="Team ID, name, or alias.")],
