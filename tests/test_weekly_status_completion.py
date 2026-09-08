@@ -141,7 +141,7 @@ def test_run_json_many_is_bounded_and_preserves_request_order(
 def test_team_work_cache_revision_is_selective(generator):
     assert generator._query_cache_version(["dashboard", "get"]) == "1"
     assert generator._query_cache_version(["team", "work", "A2A"]) == "1:2"
-    assert generator._query_cache_version(["github", "finder"]) == "1:2"
+    assert generator._query_cache_version(["github", "finder"]) == "1:3"
 
 
 def test_page_includes_snapshot_provenance(generator, monkeypatch):
@@ -630,6 +630,7 @@ def test_github_finder_embeds_compact_paged_records_and_controls(generator):
     assert "data-gh-outlier-toggle" in html and "data-gh-outlier-rows" in html
     assert 'data-gh-multi="timing"' in html
     assert html.count("data-gh-outlier-threshold=") == 3
+    assert 'value="9" data-gh-outlier-threshold="coding"' in html
     assert "How GitHub timing metrics are computed" in html
     assert 'data-gh-multi="teamMapping"' in html
     assert "Mapped to a Jira team" in html and "Not mapped to a Jira team" in html

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from engineering_intelligence.queries.github_finder import _coding_hours
+from engineering_intelligence.queries.github_finder import _coding_hours, _commit_boundary
 from engineering_intelligence.queries.github_pr_metrics import _author_in_scope, _measure
 
 
@@ -61,3 +61,11 @@ def test_coding_hours_is_first_commit_to_pr_creation() -> None:
     assert _coding_hours(created, created - timedelta(hours=30)) == 30.0
     assert _coding_hours(created, created + timedelta(hours=1)) == 0.0
     assert _coding_hours(created, None) is None
+
+
+def test_coding_boundary_uses_commit_timestamp_not_authored_timestamp() -> None:
+    old_authored = datetime(2025, 1, 1, tzinfo=UTC)
+    committed = datetime(2026, 1, 1, tzinfo=UTC)
+    assert _commit_boundary(SimpleNamespace(
+        authored_at=old_authored, committed_at=committed
+    )) == committed

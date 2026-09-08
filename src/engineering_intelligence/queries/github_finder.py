@@ -103,7 +103,7 @@ class GitHubFinderQuery:
                         )
                     ).all()
                     for pull_id, commit in linked_commits:
-                        committed = _utc(commit.authored_at or commit.committed_at)
+                        committed = _commit_boundary(commit)
                         if committed is not None and (pull_id not in first_commits or committed < first_commits[pull_id]):
                             first_commits[pull_id] = committed
                 for pull, version in pulls:
@@ -178,6 +178,10 @@ def _coding_hours(created_at: datetime, first_commit_at: datetime | None) -> flo
     if first_commit_at is None:
         return None
     return max((created_at - first_commit_at).total_seconds() / 3600, 0.0)
+
+
+def _commit_boundary(commit: GitHubCommit) -> datetime | None:
+    return _utc(commit.committed_at)
 
 
 def _relationships(session: Session, record_keys, high_water):
