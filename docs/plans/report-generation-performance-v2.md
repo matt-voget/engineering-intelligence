@@ -1,6 +1,6 @@
 # Report generation performance v2
 
-**Status:** In progress (approved 2026-09-08)
+**Status:** Complete (approved and delivered 2026-09-08)
 **Owner:** titan
 **Started:** 2026-09-08
 
@@ -109,11 +109,19 @@ The query implementations explain the measured cost:
    process and one atomic cache entry. A six-worker experiment did not improve
    throughput because SQLite contention offset the extra parallelism, so the bounded
    worker count remains three.
-7. Run full verification and live cold/warm benchmarks; tune only from observed data.
-8. Update this plan with measured results, commit and push the completed work, and
-   generate a fresh report through the optimized path.
+7. **Complete 2026-09-08:** The final isolated cold benchmark completed in 410.6
+   seconds (6 minutes 51 seconds), versus the 3,992.7-second baseline: a 9.7x speedup
+   and below the 10-minute target. Its cache-only rerender completed in 2.9 seconds.
+   Ruff, all 145 tests, the skill validator, `git diff --check`, and structural checks
+   of the 24 MB self-contained HTML passed.
+8. **Complete 2026-09-08:** Refresh `c40dfd28-357a-4f83-a4f0-3d2f3c272538`
+   completed all 355 configured sources and pinned snapshot
+   `76355724-b18d-4c2c-a04a-394b22f8a863`. The fresh report materialized in 420.5
+   seconds at `reports/weekly-status-2026-09-08.html` with all 16 team and 37 person
+   routes plus both finders.
 
 ## Exact next action
 
-Commit and push the bulk feature checkpoint, then run a new isolated-cache cold
-benchmark and its cache-only rerender.
+No further action is required. Future report runs should use the persisted timing
+summary to detect regressions and retain the three-worker bound unless new benchmarks
+show a benefit.
