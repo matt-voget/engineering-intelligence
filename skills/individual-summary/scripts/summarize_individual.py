@@ -89,6 +89,14 @@ def resolve_person(path: Path, identifier: str) -> dict:
         str(person.get(field) or "").casefold()
         for field in ("id", "name", "preferred_name", "github_login", "jira_account_id")
     }]
+    if not matches:
+        matches = [
+            person for person in people.values()
+            if any(
+                str(person.get(field) or "").casefold().startswith(f"{needle} ")
+                for field in ("name", "preferred_name")
+            )
+        ]
     if len(matches) != 1:
         raise ValueError(f"Person not found or ambiguous: {identifier}")
     person = dict(matches[0])
