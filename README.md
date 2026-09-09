@@ -75,6 +75,10 @@ Questions about the resulting HTML can invoke
 snapshot-pinned rows and reproduces the visible filters and chart grouping before it
 interprets the data.
 
+Use `$individual-summary` for a short, evidence-linked account of one person's work
+over a requested date range, including Jira cycle time, authored-PR coding time,
+reviewed-PR timing, and notable data patterns.
+
 The remaining sections document the same setup flow command by command and provide a
 CLI-only alternative.
 
