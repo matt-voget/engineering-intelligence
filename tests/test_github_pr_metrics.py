@@ -71,25 +71,15 @@ def test_coding_boundary_uses_commit_timestamp_not_authored_timestamp() -> None:
     )
 
 
-def test_coding_boundary_prefers_primary_jira_commit_and_falls_back() -> None:
+def test_coding_boundary_uses_earliest_linked_commit_without_jira_logic() -> None:
     old = datetime(2026, 1, 1, tzinfo=UTC)
-    primary = datetime(2026, 1, 3, tzinfo=UTC)
-    version = SimpleNamespace(
-        title="Deliver fleet",
-        head_ref="feature/edge-121",
-        body="",
-    )
+    later = datetime(2026, 1, 3, tzinfo=UTC)
     commits = [
         SimpleNamespace(message="Unrelated work", committed_at=old),
-        SimpleNamespace(message="Finish EDGE-121", committed_at=primary),
+        SimpleNamespace(message="Finish EDGE-121", committed_at=later),
     ]
-    assert _coding_boundary(version, commits, {"EDGE-121"}) == (
-        primary,
-        "primary_jira_key",
-        "EDGE-121",
-    )
-    assert _coding_boundary(version, commits[:1], {"EDGE-121"}) == (
+    assert _coding_boundary(commits) == (
         old,
-        "fallback_no_matching_jira_commit",
-        "EDGE-121",
+        "earliest_linked_commit",
     )
+    assert _coding_boundary([]) == (None, None)

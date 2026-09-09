@@ -141,7 +141,7 @@ def test_run_json_many_is_bounded_and_preserves_request_order(
 def test_team_work_cache_revision_is_selective(generator):
     assert generator._query_cache_version(["dashboard", "get"]) == "1"
     assert generator._query_cache_version(["team", "work", "A2A"]) == "1:3"
-    assert generator._query_cache_version(["github", "finder"]) == "1:5"
+    assert generator._query_cache_version(["github", "finder"]) == "1:6"
 
 
 def test_page_includes_snapshot_provenance(generator, monkeypatch):

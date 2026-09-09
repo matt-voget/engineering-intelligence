@@ -1,6 +1,5 @@
 """Snapshot-safe organization-wide pull-request and commit finder."""
 
-import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -125,8 +124,8 @@ class GitHubFinderQuery:
                     measurement = _measure(version, reviews)
                     created_at = _as_utc(version.source_created_at)
                     jira_urls = relationships.get(("pull_request", pull.id), {})
-                    first_commit_at, coding_basis, coding_jira_key = _coding_boundary(
-                        version, commits_by_pull[pull.id], set(jira_urls)
+                    first_commit_at, coding_basis = _coding_boundary(
+                        commits_by_pull[pull.id]
                     )
                     records.append(
                         GitHubFinderRecord(
@@ -153,7 +152,6 @@ class GitHubFinderQuery:
                             ),
                             first_commit_at=first_commit_at,
                             coding_time_basis=coding_basis,
-                            coding_jira_key=coding_jira_key,
                             first_reviewed_at=measurement[0] if measurement else None,
                             coding_hours=_coding_hours(created_at, first_commit_at),
                             pickup_hours=measurement[1] if measurement else None,
@@ -231,34 +229,9 @@ def _commit_boundary(commit: GitHubCommit) -> datetime | None:
     return _utc(commit.committed_at)
 
 
-JIRA_KEY = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_]+-\d+)(?!\d)")
-
-
-def _coding_boundary(version, commits, linked_jira_keys: set[str]):
-    primary_key = next(
-        (
-            key
-            for text in (version.title, version.head_ref, version.body or "")
-            for key in JIRA_KEY.findall((text or "").upper())
-            if key in linked_jira_keys
-        ),
-        None,
-    )
-    candidates = commits
-    basis = "fallback_no_primary_jira"
-    if primary_key:
-        matching = [
-            commit
-            for commit in commits
-            if primary_key in JIRA_KEY.findall((commit.message or "").upper())
-        ]
-        if matching:
-            candidates = matching
-            basis = "primary_jira_key"
-        else:
-            basis = "fallback_no_matching_jira_commit"
-    timestamps = [value for commit in candidates if (value := _commit_boundary(commit))]
-    return (min(timestamps), basis, primary_key) if timestamps else (None, None, primary_key)
+def _coding_boundary(commits):
+    timestamps = [value for commit in commits if (value := _commit_boundary(commit))]
+    return (min(timestamps), "earliest_linked_commit") if timestamps else (None, None)
 
 
 def _relationships(session: Session, record_keys, high_water):
