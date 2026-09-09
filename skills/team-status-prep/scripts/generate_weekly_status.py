@@ -22,7 +22,7 @@ from pathlib import Path
 LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "engineering-intelligence-logo.png"
 ECHARTS_PATH = Path(__file__).resolve().parent.parent / "assets" / "echarts-6.1.0.min.js"
 REPORT_CACHE_VERSION = "1"
-REPORT_QUERY_REVISIONS = {("team", "work"): "2", ("github", "finder"): "5"}
+REPORT_QUERY_REVISIONS = {("team", "work"): "3", ("github", "finder"): "5"}
 _query_cache_dir: Path | None = None
 _query_cache_context = ""
 _query_cache_rebuild = False
@@ -1185,6 +1185,8 @@ def issue_finder_section(issues: list[dict], all_teams: list[str] | None = None)
         data-issue-skipped-phases="{'Has skipped phases' if item.get('skipped_phases') else 'No skipped phases'}"
         data-issue-classification="{esc(item.get('classification') or 'unknown')}"
         data-cycle-ended="{date_attr(item.get('cycle_ended_at'))}"
+        data-status-started="{date_attr(item.get('current_status_started_at'))}"
+        data-status-age-days="{item.get('current_status_age_days') if item.get('current_status_age_days') is not None else ''}"
         data-total-cycle-days="{item.get('total_cycle_days') if item.get('cycle_ended_at') and item.get('total_cycle_days') is not None else ''}">
         <td>{link(item.get("url"), item.get("jira_key"))}</td>
         <td>{esc(item["team_name"])}</td>

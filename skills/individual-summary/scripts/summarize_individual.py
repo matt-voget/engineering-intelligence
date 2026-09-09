@@ -120,6 +120,11 @@ def issue_rows(raw: list[dict], names: set[str], start: date, end: date) -> tupl
             "key": cells[0]["text"], "url": next(iter(cells[0]["links"]), None),
             "team": attrs.get("data-issue-team"), "type": attrs.get("data-issue-type"),
             "status": status, "updated": attrs.get("data-date"),
+            "status_started": attrs.get("data-status-started") or None,
+            "status_age_days": (
+                float(attrs["data-status-age-days"])
+                if attrs.get("data-status-age-days") else None
+            ),
             "done": attrs.get("data-cycle-ended") or None,
             "cycle_days": number(cells[6]), "in_progress_days": number(cells[7]),
             "in_review_days": number(cells[8]), "in_test_days": number(cells[9]),
@@ -142,7 +147,9 @@ def pr_row(row: dict) -> dict:
     return {
         "repository": row["repository"], "identifier": row["identifier"],
         "title": row["title"], "url": row["url"], "state": row["state"],
-        "merged": row["merged"], "jira_keys": row["jira_keys"],
+        "created": row["created"], "updated": row["updated"],
+        "first_reviewed": row["first_reviewed"], "merged": row["merged"],
+        "jira_keys": row["jira_keys"],
         "coding_hours": row["coding_hours"], "pickup_hours": row["pickup_hours"],
         "review_hours": row["review_hours"], "coding_basis": row["coding_basis"],
     }

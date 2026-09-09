@@ -222,6 +222,9 @@ class TeamWorkQuery:
                         if timeline is not None
                         else None
                     )
+                    current_status_started_at = _current_status_started_at(
+                        timeline, high_water
+                    )
                     jira_issues.append(
                         ClassifiedJiraIssue(
                             jira_key=issue.issue_key,
@@ -238,6 +241,12 @@ class TeamWorkQuery:
                             ibr_parent_key=ancestor.issue_key if ancestor else None,
                             ibr_parent_url=ancestor.web_url if ancestor else None,
                             active=active,
+                            current_status_started_at=current_status_started_at,
+                            current_status_age_days=round(
+                                (high_water - current_status_started_at).total_seconds()
+                                / 86400,
+                                2,
+                            ),
                             cycle_started_at=(
                                 cycle_metrics.period_started_at if cycle_metrics else None
                             ),
@@ -290,7 +299,6 @@ class TeamWorkQuery:
                 set(population) if jira_available else set(),
                 notes,
             )
-
             notes.append(
                 "Issue priority is not captured in the pinned snapshot; P1 status "
                 "cannot be labelled deterministically."
@@ -594,3 +602,17 @@ class TeamWorkQuery:
             "records as IBR-linked or non-IBR but do not assign a team."
         )
         return records, split, True, message
+
+
+def _current_status_started_at(timeline: object, high_water: datetime) -> datetime:
+    current = (timeline.version.status_name or "").strip().casefold()
+    matching = [
+        transition
+        for transition in timeline.transitions
+        if (transition.to_status_name or "").strip().casefold() == current
+        and _as_utc(transition.changed_at) <= high_water
+    ]
+    if matching:
+        return _as_utc(matching[-1].changed_at)
+    created = timeline.version.source_created_at or timeline.version.observed_at
+    return _as_utc(created)

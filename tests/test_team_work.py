@@ -264,6 +264,10 @@ def test_team_work_classifies_jira_and_github_records(tmp_path: Path) -> None:
     assert issues["IDN-2"].link_basis == "descendant_of_ibr_item"
     assert issues["IDN-2"].ibr_parent_key == "IDN-1"
     assert issues["IDN-2"].assignee_display_name == "Alex Kim"
+    assert issues["IDN-2"].current_status_started_at == datetime(
+        2026, 7, 25, 9, 0, tzinfo=UTC
+    )
+    assert issues["IDN-2"].current_status_age_days == 3.29
     assert issues["IDN-2"].skipped_phases == []
     # The pull request keyed to IDN-2 surfaces on the issue row.
     assert [pull.record_id for pull in issues["IDN-2"].linked_pull_requests] == [

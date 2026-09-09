@@ -34,6 +34,8 @@ class ClassifiedJiraIssue(BaseModel):
     ibr_parent_key: str | None
     ibr_parent_url: str | None
     active: bool
+    current_status_started_at: datetime | None = None
+    current_status_age_days: float | None = None
     cycle_started_at: datetime | None = None
     cycle_ended_at: datetime | None = None
     total_cycle_days: float | None = None
@@ -72,7 +74,7 @@ class WorkSplit(BaseModel):
 class TeamWorkClassification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "1"
+    schema_version: str = "1.1"
     snapshot_id: str
     snapshot_name: str
     snapshot_created_at: datetime
