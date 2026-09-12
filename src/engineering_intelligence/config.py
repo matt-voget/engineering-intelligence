@@ -106,7 +106,9 @@ class GitHubConfig(BaseModel):
     #               exists, falling back to the author when the PR carries no Jira key.
     #               This mirrors the Gravitee Operations Portal and exists for
     #               reconciliation against it; see docs/notes/portal-comparison-2026-09.md.
-    attribution: Literal["author", "jira-team"] = "author"
+    #   jira-team-strict — as jira-team but PRs with no Jira team are dropped, which is
+    #               exactly the Portal's "Unassigned" behaviour.
+    attribution: Literal["author", "jira-team", "jira-team-strict"] = "author"
     # Every run re-verifies at least this many days of pull-request history per
     # repository; the per-repository cap only limits records older than this window.
     min_refresh_window_days: int = Field(default=31, ge=1, le=365)

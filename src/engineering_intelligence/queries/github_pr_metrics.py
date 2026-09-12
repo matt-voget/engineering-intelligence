@@ -112,7 +112,7 @@ class GitHubPullRequestMetricsQuery:
             attribution = source_config.github.attribution
             team_names = {team.name.casefold(), *(alias.casefold() for alias in team.aliases)}
             linked_teams: dict[str, set[str]] = {}
-            if attribution == "jira-team":
+            if attribution in ("jira-team", "jira-team-strict"):
                 linked_teams = _linked_jira_teams(session)
                 candidate_pull_ids |= {
                     pull_id
@@ -218,6 +218,10 @@ class GitHubPullRequestMetricsQuery:
                     "PR authors must match an active configured GitHub identity for "
                     "the selected team at the snapshot date."
                     if attribution == "author"
+                    else "Attribution mode jira-team-strict: a PR is credited only to the "
+                    "Team field of the Jira issue named in it; PRs with no Jira team are "
+                    "excluded, matching the Portal's Unassigned bucket."
+                    if attribution == "jira-team-strict"
                     else "Attribution mode jira-team: a PR is credited to the Team field "
                     "of the Jira issue named in it; PRs with no Jira key fall back to "
                     "the author's configured team, and PRs whose Jira team is another "
@@ -300,6 +304,8 @@ def _attributed(
     credits the team named by the PR's Jira issue(s) when any is linked, and falls
     back to the author only for PRs with no Jira team at all.
     """
+    if mode == "jira-team-strict":
+        return bool(linked_team_names & team_names)
     if mode != "jira-team":
         return author_in_scope
     if linked_team_names:

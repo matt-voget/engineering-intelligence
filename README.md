@@ -114,7 +114,7 @@ defines:
 - GitHub repositories and their explicit team mappings
 - Environment-variable names used for credentials
 
-The GitHub section also accepts `attribution: author | jira-team` (default `author`).
+The GitHub section also accepts `attribution: author | jira-team | jira-team-strict` (default `author`).
 `jira-team` credits a merged PR to the Team field of the Jira issue named in it and falls
 back to the author only when the PR has no Jira key; it exists to reconcile against the
 Gravitee Operations Portal, which attributes the same way. `max_pull_requests_per_repository`
