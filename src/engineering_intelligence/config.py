@@ -166,7 +166,7 @@ class RagRuleConfig(BaseModel):
     metric: Literal["cycle_days", "pickup_hours", "review_hours"]
     amber_at: float = Field(ge=0)
     red_at: float = Field(ge=0)
-    classification: Literal["ibr_linked", "non_ibr"] | None = None
+    classification: Literal["ibr_linked", "non_ibr", "ibr_children"] | None = None
     team_ids: list[str] = Field(default_factory=list)
     enabled: bool = True
 

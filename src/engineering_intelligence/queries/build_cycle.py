@@ -62,6 +62,7 @@ class BuildCycleTimeQuery:
         snapshot_identifier: str,
         team_identifier: str,
         teams_config: TeamsConfig,
+        include_children: bool = False,
     ) -> BuildCycleTimeView:
         with self.sessions() as session:
             snapshot = DashboardQuery._snapshot(session, snapshot_identifier)
@@ -104,6 +105,12 @@ class BuildCycleTimeQuery:
                     "are classified as non-IBR."
                 )
 
+            if include_children:
+                notes.append(
+                    "Group ibr_children lists IBR-linked child issues (sub-tasks excluded) "
+                    "measured individually, the population the Operations Portal reports; "
+                    "their parents remain in ibr_linked."
+                )
             visible_ids = team_issue_ids | board_issue_ids
             timelines = {
                 issue_id: timeline
@@ -133,13 +140,20 @@ class BuildCycleTimeQuery:
                 "ibr_linked": [],
                 "non_ibr": [],
             }
+            if include_children:
+                grouped["ibr_children"] = []
             for issue_id in sorted(team_issue_ids):
                 timeline = timelines.get(issue_id)
                 if timeline is None:
                     continue
                 group = classification(issue_id)
                 if not _eligible_issue(group, timeline.version.issue_type_name):
-                    continue
+                    if not (
+                        include_children
+                        and _eligible_child(group, timeline.version.issue_type_name)
+                    ):
+                        continue
+                    group = "ibr_children"
                 if not _is_done_status(timeline.version.status_name):
                     continue
                 cycle = _cycle(timeline)
@@ -160,9 +174,9 @@ class BuildCycleTimeQuery:
                         period_ended_at=ended,
                         top_status=_top_status(durations),
                         status_durations=durations,
-                        children=_children(
-                            issue_id, timelines, children_by_parent, depth=1
-                        ),
+                        children=[]
+                        if group == "ibr_children"
+                        else _children(issue_id, timelines, children_by_parent, depth=1),
                         rag=assess_rag(
                             teams_config.rag,
                             team_id=team.id,
@@ -189,7 +203,7 @@ class BuildCycleTimeQuery:
                         classification=classification_name,
                         contributions=grouped[classification_name],
                     )
-                    for classification_name in ("ibr_linked", "non_ibr")
+                    for classification_name in grouped
                 ],
                 data_quality_notes=notes
                 + [
@@ -242,6 +256,19 @@ def _timeline(
 def _eligible_issue(classification: str, issue_type: str | None) -> bool:
     return classification == "non_ibr" or (
         (issue_type or "").strip().casefold() in PARENT_ISSUE_TYPES
+    )
+
+
+SUBTASK_ISSUE_TYPES = {"sub-task", "subtask", "sub task"}
+
+
+def _eligible_child(classification: str, issue_type: str | None) -> bool:
+    """An IBR-linked story or bug (not a parent type, not a sub-task), measured on its own."""
+    kind = (issue_type or "").strip().casefold()
+    return (
+        classification == "ibr_linked"
+        and kind not in PARENT_ISSUE_TYPES
+        and kind not in SUBTASK_ISSUE_TYPES
     )
 
 

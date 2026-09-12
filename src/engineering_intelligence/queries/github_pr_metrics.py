@@ -1,5 +1,6 @@
 """Calculate snapshot-safe GitHub pull-request pickup and review time."""
 
+import re
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -11,6 +12,9 @@ from engineering_intelligence.persistence.models import (
     GitHubPullRequestVersion,
     GitHubRepository,
     GitHubReview,
+    JiraGitHubRelationship,
+    JiraIssue,
+    JiraIssueVersion,
     SnapshotSourceState,
 )
 from engineering_intelligence.presentations.github_pr_metrics import (
@@ -37,7 +41,19 @@ class GitHubPullRequestMetricsQuery:
         team_identifier: str,
         source_config: SourceConfig,
         teams_config: TeamsConfig,
+        attribution: str = "author",
     ) -> GitHubPullRequestMetricsView:
+        """Pickup/review metrics for one team.
+
+        ``attribution`` is a per-query choice, not configuration, so it never changes a
+        snapshot's pinned config hash: ``author`` (default, the report contract) credits
+        PRs authored by configured team members; ``jira-team`` credits a PR to the Team
+        field of the first Jira key in its title, then branch name, falling back to the
+        author only when no such key names a team; ``jira-team-strict`` is the same but
+        drops PRs that name no Jira team (the Operations Portal's "Unassigned" rule).
+        """
+        if attribution not in ATTRIBUTION_MODES:
+            raise ValueError(f"Unknown attribution mode: {attribution}")
         with self.sessions() as session:
             snapshot = DashboardQuery._snapshot(session, snapshot_identifier)
             source_config = source_config_for_snapshot(snapshot, source_config)
@@ -56,16 +72,17 @@ class GitHubPullRequestMetricsQuery:
                 repository.full_name
                 for repository in source_config.github.repositories
             )
+            all_states = session.scalars(
+                select(SnapshotSourceState).where(
+                    SnapshotSourceState.snapshot_id == snapshot.id
+                )
+            ).all()
             states = {
                 state.scope.removeprefix("repository:"): state
-                for state in session.scalars(
-                    select(SnapshotSourceState).where(
-                        SnapshotSourceState.snapshot_id == snapshot.id,
-                        SnapshotSourceState.source == "github",
-                    )
-                ).all()
-                if state.scope.startswith("repository:")
+                for state in all_states
+                if state.source == "github" and state.scope.startswith("repository:")
             }
+            jira_high_water = _jira_high_water(all_states, team.id)
             identity = {
                 member.github_login.casefold(): member.preferred_name or member.name
                 for configured_team in teams_config.teams
@@ -107,6 +124,12 @@ class GitHubPullRequestMetricsQuery:
                     )
                 )
             )
+            team_names = {team.name.casefold(), *(alias.casefold() for alias in team.aliases)}
+            issue_team_cache: dict[str, str | None] = {}
+            if attribution != "author" and jira_high_water is not None:
+                candidate_pull_ids |= _pulls_linked_to_team(
+                    session, team_names, jira_high_water
+                )
             pulls = (
                 session.scalars(
                     select(GitHubPullRequest).where(
@@ -133,8 +156,18 @@ class GitHubPullRequestMetricsQuery:
                     .order_by(GitHubPullRequestVersion.observed_at.desc())
                     .limit(1)
                 )
-                if version is None or not _author_in_scope(
-                    version.author_login, author_logins
+                if version is None:
+                    continue
+                jira_team = (
+                    _jira_team_of_pull(session, version, jira_high_water, issue_team_cache)
+                    if attribution != "author" and jira_high_water is not None
+                    else None
+                )
+                if not _attributed(
+                    attribution,
+                    _author_in_scope(version.author_login, author_logins),
+                    jira_team,
+                    team_names,
                 ):
                     continue
                 reviews = list(
@@ -199,10 +232,7 @@ class GitHubPullRequestMetricsQuery:
                 ),
                 "Review time is elapsed time from that first review to merge.",
                 "The report date filter selects PRs by merge date.",
-                (
-                    "PR authors must match an active configured GitHub identity for "
-                    "the selected team at the snapshot date."
-                ),
+                ATTRIBUTION_NOTES[attribution],
                 (
                     "All configured repositories are searched; repository-to-team "
                     "mapping is not used."
@@ -225,7 +255,12 @@ class GitHubPullRequestMetricsQuery:
                 team_id=team.id,
                 team_name=team.name,
                 repositories=repository_names,
-                author_logins=sorted(author_logins),
+                author_logins=sorted(author_logins)
+                if attribution == "author"
+                else sorted(
+                    {item.author.login for item in contributions if item.author},
+                    key=str.casefold,
+                ),
                 contributions=contributions,
                 data_quality_notes=notes,
             )
@@ -266,3 +301,122 @@ def _person(login: str | None, identity: dict[str, str]) -> GitHubPersonRef | No
 
 def _author_in_scope(login: str | None, author_logins: set[str]) -> bool:
     return bool(login and login.casefold() in author_logins)
+
+
+ATTRIBUTION_MODES = ("author", "jira-team", "jira-team-strict")
+ATTRIBUTION_NOTES = {
+    "author": (
+        "PR authors must match an active configured GitHub identity for "
+        "the selected team at the snapshot date."
+    ),
+    "jira-team": (
+        "Attribution mode jira-team: a PR is credited to the Team field of the first "
+        "Jira key in its title, then its branch name, as recorded in the pinned Jira "
+        "snapshot; PRs naming no Jira team fall back to the author's configured team, "
+        "and PRs whose Jira team is another team are excluded even when a team member "
+        "authored them. author_logins lists the contributing authors."
+    ),
+    "jira-team-strict": (
+        "Attribution mode jira-team-strict: a PR is credited only to the Team field of "
+        "the first Jira key in its title, then its branch name; PRs naming no Jira team "
+        "are excluded, matching the Operations Portal's Unassigned bucket. author_logins "
+        "lists the contributing authors."
+    ),
+}
+_JIRA_KEY = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
+
+
+def _attributed(
+    mode: str,
+    author_in_scope: bool,
+    jira_team: str | None,
+    team_names: set[str],
+) -> bool:
+    """Decide whether a pull request counts for the selected team.
+
+    ``author`` credits the author's configured team only. ``jira-team`` credits the
+    single team named by the PR's first Jira key when one names a team, and falls
+    back to the author otherwise. ``jira-team-strict`` never falls back.
+    """
+    if mode == "jira-team-strict":
+        return jira_team is not None and jira_team in team_names
+    if mode != "jira-team":
+        return author_in_scope
+    if jira_team is not None:
+        return jira_team in team_names
+    return author_in_scope
+
+
+def _jira_high_water(states, team_id: str) -> datetime | None:
+    """The Jira high-water mark to pin issue versions to: the team scope's, else the latest."""
+    jira = [state for state in states if state.source == "jira"]
+    scoped = next(
+        (state for state in jira if state.scope == f"query:team-field-{team_id}"), None
+    )
+    if scoped is not None:
+        return _as_utc(scoped.high_water_mark)
+    marks = [_as_utc(state.high_water_mark) for state in jira if state.high_water_mark]
+    return max(marks) if marks else None
+
+
+def _jira_keys_in_order(version) -> list[str]:
+    """Jira keys named by a pull request, title first then branch, in text order, deduplicated."""
+    seen: list[str] = []
+    for text in (version.title or "", version.head_ref or ""):
+        for key in _JIRA_KEY.findall(text.upper()):
+            if key not in seen:
+                seen.append(key)
+    return seen
+
+
+def _jira_team_of_pull(
+    session: Session,
+    version,
+    jira_high_water: datetime,
+    cache: dict[str, str | None],
+) -> str | None:
+    """Casefolded Team-field name of the first Jira key on the PR that names a team, pinned to the snapshot."""
+    for key in _jira_keys_in_order(version):
+        if key not in cache:
+            issue = session.scalar(select(JiraIssue).where(JiraIssue.issue_key == key))
+            team_name = None
+            if issue is not None:
+                team_name = session.scalar(
+                    select(JiraIssueVersion.team_name)
+                    .where(
+                        JiraIssueVersion.issue_id == issue.id,
+                        JiraIssueVersion.observed_at <= jira_high_water,
+                    )
+                    .order_by(JiraIssueVersion.observed_at.desc())
+                    .limit(1)
+                )
+            cache[key] = team_name.casefold() if team_name else None
+        if cache[key]:
+            return cache[key]
+    return None
+
+
+def _pulls_linked_to_team(
+    session: Session, team_names: set[str], jira_high_water: datetime
+) -> set[str]:
+    """Candidate pull request ids: any PR linked to an issue whose pinned Team field names this team."""
+    issue_ids = {
+        issue_id
+        for issue_id, team_name in session.execute(
+            select(JiraIssueVersion.issue_id, JiraIssueVersion.team_name).where(
+                JiraIssueVersion.observed_at <= jira_high_water,
+                JiraIssueVersion.team_name.is_not(None),
+            )
+        )
+        if team_name and team_name.casefold() in team_names
+    }
+    if not issue_ids:
+        return set()
+    return set(
+        session.scalars(
+            select(JiraGitHubRelationship.github_record_id).where(
+                JiraGitHubRelationship.github_record_type == "pull_request",
+                JiraGitHubRelationship.jira_issue_id.in_(sorted(issue_ids)),
+            )
+        )
+    )
