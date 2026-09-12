@@ -115,8 +115,9 @@ defines:
 - Environment-variable names used for credentials
 
 The GitHub section also accepts `attribution: author | jira-team | jira-team-strict` (default `author`).
-`jira-team` credits a merged PR to the Team field of the Jira issue named in it and falls
-back to the author only when the PR has no Jira key; it exists to reconcile against the
+`jira-team` credits a merged PR to the Team field of the Jira issue named in it and fall
+back to the author only when the PR has no Jira key (`jira-team-strict` drops those PRs
+instead); it exists to reconcile against the
 Gravitee Operations Portal, which attributes the same way. `max_pull_requests_per_repository`
 bounds how far back one refresh walks a busy repository; raise it (up to 5000) when the
 oldest merged PR in a refreshed repository is later than `initial_lookback_days` ago.

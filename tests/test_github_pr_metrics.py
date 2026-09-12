@@ -104,3 +104,11 @@ def test_attribution_jira_team_mode_credits_the_jira_team_and_falls_back_to_auth
     assert not _attributed("jira-team", False, set(), {"devex"})
     # Aliases are part of the team name set.
     assert _attributed("jira-team", False, {"builder experience"}, {"bx", "builder experience"})
+
+
+def test_attribution_jira_team_strict_drops_prs_without_a_jira_team() -> None:
+    from engineering_intelligence.queries.github_pr_metrics import _attributed
+
+    assert _attributed("jira-team-strict", False, {"devex"}, {"devex"})
+    assert not _attributed("jira-team-strict", True, set(), {"devex"})
+    assert not _attributed("jira-team-strict", True, {"foundations"}, {"devex"})
