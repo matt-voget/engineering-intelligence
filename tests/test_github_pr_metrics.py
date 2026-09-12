@@ -85,30 +85,49 @@ def test_coding_boundary_uses_earliest_linked_commit_without_jira_logic() -> Non
     assert _coding_boundary([]) == (None, None)
 
 
-def test_attribution_author_mode_ignores_jira_links() -> None:
+def test_attribution_author_mode_ignores_jira_teams() -> None:
     from engineering_intelligence.queries.github_pr_metrics import _attributed
 
-    assert _attributed("author", True, {"other team"}, {"devex"})
-    assert not _attributed("author", False, {"devex"}, {"devex"})
+    assert _attributed("author", True, "other team", {"devex"})
+    assert not _attributed("author", False, "devex", {"devex"})
 
 
-def test_attribution_jira_team_mode_credits_the_jira_team_and_falls_back_to_author() -> None:
+def test_attribution_jira_team_credits_the_jira_team_and_falls_back_to_author() -> None:
     from engineering_intelligence.queries.github_pr_metrics import _attributed
 
-    # Linked issue names this team: counted regardless of author.
-    assert _attributed("jira-team", False, {"devex"}, {"devex"})
-    # Linked issue names another team: excluded even for a team author.
-    assert not _attributed("jira-team", True, {"foundations"}, {"devex"})
-    # No Jira team at all: the author's configured team decides.
-    assert _attributed("jira-team", True, set(), {"devex"})
-    assert not _attributed("jira-team", False, set(), {"devex"})
-    # Aliases are part of the team name set.
-    assert _attributed("jira-team", False, {"builder experience"}, {"bx", "builder experience"})
+    assert _attributed("jira-team", False, "devex", {"devex"})
+    assert not _attributed("jira-team", True, "foundations", {"devex"})
+    assert _attributed("jira-team", True, None, {"devex"})
+    assert not _attributed("jira-team", False, None, {"devex"})
+    assert _attributed("jira-team", False, "builder experience", {"bx", "builder experience"})
 
 
 def test_attribution_jira_team_strict_drops_prs_without_a_jira_team() -> None:
     from engineering_intelligence.queries.github_pr_metrics import _attributed
 
-    assert _attributed("jira-team-strict", False, {"devex"}, {"devex"})
-    assert not _attributed("jira-team-strict", True, set(), {"devex"})
-    assert not _attributed("jira-team-strict", True, {"foundations"}, {"devex"})
+    assert _attributed("jira-team-strict", False, "devex", {"devex"})
+    assert not _attributed("jira-team-strict", True, None, {"devex"})
+    assert not _attributed("jira-team-strict", True, "foundations", {"devex"})
+
+
+def test_jira_keys_are_read_from_title_first_then_branch_in_text_order() -> None:
+    from types import SimpleNamespace
+
+    from engineering_intelligence.queries.github_pr_metrics import _jira_keys_in_order
+
+    version = SimpleNamespace(
+        title="fix(gko-12): follow-up to FOUND-7 and gko-12", head_ref="feature/AIAM-3-x"
+    )
+    assert _jira_keys_in_order(version) == ["GKO-12", "FOUND-7", "AIAM-3"]
+    assert _jira_keys_in_order(SimpleNamespace(title="no key here", head_ref="main")) == []
+
+
+def test_unknown_attribution_mode_is_rejected() -> None:
+    import pytest
+
+    from engineering_intelligence.queries.github_pr_metrics import (
+        GitHubPullRequestMetricsQuery,
+    )
+
+    with pytest.raises(ValueError):
+        GitHubPullRequestMetricsQuery(None).get("s", "t", None, None, attribution="nope")

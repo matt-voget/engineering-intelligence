@@ -106,11 +106,14 @@ def create_server(
             "cycle evidence."
         ),
     )
-    def get_build_cycle_time(snapshot: str, team: str) -> dict[str, Any]:
+    def get_build_cycle_time(
+        snapshot: str, team: str, include_children: bool = False
+    ) -> dict[str, Any]:
         return BuildCycleTimeQuery(sessions).get(
             snapshot,
             team,
             teams_config,
+            include_children=include_children,
         ).model_dump(mode="json")
 
     @server.tool(
@@ -118,17 +121,23 @@ def create_server(
         title="Get team GitHub PR metrics",
         annotations=READ_ONLY_TOOL,
         description=(
-            "Return snapshot-backed pull-request pickup and review time for PRs authored "
-            "by active members of the selected team across all configured repositories, with "
-            "contributing PR links, authors, and reviewers."
+            "Return snapshot-backed pull-request pickup and review time for the selected "
+            "team across all configured repositories, with contributing PR links, authors, "
+            "and reviewers. attribution defaults to author (PRs authored by active team "
+            "members); jira-team credits PRs by the Team field of the first Jira key in the "
+            "title or branch with author fallback; jira-team-strict drops PRs naming no "
+            "Jira team. Non-default modes are reconciliation views, not the report contract."
         ),
     )
-    def get_github_pr_metrics(snapshot: str, team: str) -> dict[str, Any]:
+    def get_github_pr_metrics(
+        snapshot: str, team: str, attribution: str = "author"
+    ) -> dict[str, Any]:
         return GitHubPullRequestMetricsQuery(sessions).get(
             snapshot,
             team,
             source_config,
             teams_config,
+            attribution=attribution,
         ).model_dump(mode="json")
 
     @server.tool(

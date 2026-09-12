@@ -1399,11 +1399,20 @@ def metrics_github_pr(
         str,
         typer.Option("--format", help="Output format; currently json."),
     ] = "json",
+    attribution: Annotated[
+        str,
+        typer.Option(
+            "--attribution",
+            help="author (default) | jira-team | jira-team-strict; how a PR is credited to the team.",
+        ),
+    ] = "author",
     data_dir: DataDir = None,
 ) -> None:
     """Render team GitHub PR pickup and review-time evidence."""
     if output_format != "json":
         raise typer.BadParameter("Expected json", param_hint="--format")
+    if attribution not in ("author", "jira-team", "jira-team-strict"):
+        raise typer.BadParameter("Expected author, jira-team or jira-team-strict", param_hint="--attribution")
     paths = runtime_paths(data_dir)
     upgrade_database(paths.database)
     sessions = session_factory(create_sqlite_engine(paths.database))
@@ -1412,6 +1421,7 @@ def metrics_github_pr(
         team,
         load_yaml_model(source_config_path, SourceConfig),
         load_yaml_model(teams_config_path, TeamsConfig),
+        attribution=attribution,
     )
     typer.echo(view.model_dump_json(indent=2))
 

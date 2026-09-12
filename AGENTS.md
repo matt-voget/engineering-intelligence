@@ -91,6 +91,9 @@ promote a new clone:
   changes and represent secondary membership with the same person ID in multiple teams.
 - Repositories are organization-wide collection scope and are never mapped to teams.
   Attribute GitHub work to a team only through confirmed member `github_login` values.
+  The `jira-team` / `jira-team-strict` attribution modes of `metrics github-pr` are an
+  explicit per-query reconciliation view against external portals that credit by Jira
+  Team field; they are never the report contract and never configuration.
 - Optional team classification queries use `team-field-TEAM_ID`.
 - Set Jira custom-field IDs only after verifying them against the user's Jira instance.
 - Never commit live URLs, account IDs, rosters, tokens, generated reports, databases,

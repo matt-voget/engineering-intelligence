@@ -90,7 +90,8 @@ resumable. A corrupt or mismatched entry is a loud failure; use
    across every configured repository and scoped to PR authors whose configured
    GitHub identity belongs to the selected team, including top contributing PRs and
    involved authors/reviewers. Repository configuration never assigns a GitHub record
-   to a team.
+   to a team. Leave the tool's `attribution` parameter at its default for the report;
+   the other modes exist only for reconciliation against external portals.
 8. Preserve deterministic RAG assessments from configured `rag.rules`. Render each
    assessment with its configured symbol and color, and provide a stable deep link
    from Team Health to the exact metric instance. Never invent thresholds.

@@ -114,15 +114,16 @@ defines:
 - GitHub repositories and their explicit team mappings
 - Environment-variable names used for credentials
 
-The GitHub section also accepts `attribution: author | jira-team | jira-team-strict` (default `author`).
-`jira-team` credits a merged PR to the Team field of the Jira issue named in it and fall
-back to the author only when the PR has no Jira key (`jira-team-strict` drops those PRs
-instead); it exists to reconcile against the
-Gravitee Operations Portal, which attributes the same way. `max_pull_requests_per_repository`
-bounds how far back one refresh walks a busy repository; raise it (up to 5000) when the
-oldest merged PR in a refreshed repository is later than `initial_lookback_days` ago.
-`engintel metrics build-cycle --children` adds an `ibr_children` group listing IBR-linked
-child issues measured individually. Known Portal-vs-EI deviations are recorded in
+`engintel metrics github-pr --attribution jira-team` (or `jira-team-strict`, and the same
+parameter on the MCP tool) is an opt-in reconciliation view: a merged PR is credited to
+the Team field of the first Jira key in its title or branch instead of to its author, with
+the author as fallback (`jira-team-strict` drops PRs that name no Jira team). It is a
+per-query choice, never configuration, so it does not change a snapshot's pinned config
+or the report contract. `max_pull_requests_per_repository` bounds how far back one refresh
+walks a busy repository; raise it (up to 5000) when the oldest merged PR in a refreshed
+repository is later than `initial_lookback_days` ago. `engintel metrics build-cycle
+--children` adds an `ibr_children` group listing IBR-linked stories and bugs measured
+individually. Known deviations against an external metrics portal are recorded in
 `docs/notes/portal-comparison-2026-09.md`.
 
 The teams file defines stable team/person IDs, aliases, membership dates, and Jira and

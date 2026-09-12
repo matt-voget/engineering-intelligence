@@ -100,15 +100,6 @@ class GitHubConfig(BaseModel):
     token_env: str = "GITHUB_PAT"
     initial_lookback_days: int = Field(default=90, ge=1, le=3650)
     max_pull_requests_per_repository: int = Field(default=500, ge=1, le=5000)
-    # How a merged pull request is credited to a team in PR metrics.
-    #   author    — the PR author's configured github_login (default; the report contract).
-    #   jira-team — the Team field of the Jira issue named in the PR title/branch when one
-    #               exists, falling back to the author when the PR carries no Jira key.
-    #               This mirrors the Gravitee Operations Portal and exists for
-    #               reconciliation against it; see docs/notes/portal-comparison-2026-09.md.
-    #   jira-team-strict — as jira-team but PRs with no Jira team are dropped, which is
-    #               exactly the Portal's "Unassigned" behaviour.
-    attribution: Literal["author", "jira-team", "jira-team-strict"] = "author"
     # Every run re-verifies at least this many days of pull-request history per
     # repository; the per-repository cap only limits records older than this window.
     min_refresh_window_days: int = Field(default=31, ge=1, le=365)
@@ -175,7 +166,7 @@ class RagRuleConfig(BaseModel):
     metric: Literal["cycle_days", "pickup_hours", "review_hours"]
     amber_at: float = Field(ge=0)
     red_at: float = Field(ge=0)
-    classification: Literal["ibr_linked", "non_ibr"] | None = None
+    classification: Literal["ibr_linked", "non_ibr", "ibr_children"] | None = None
     team_ids: list[str] = Field(default_factory=list)
     enabled: bool = True
 

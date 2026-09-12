@@ -144,5 +144,6 @@ def test_eligible_child_is_an_ibr_linked_non_parent_issue() -> None:
     assert _eligible_child("ibr_linked", "Story")
     assert _eligible_child("ibr_linked", "Private Bug")
     assert not _eligible_child("ibr_linked", "Epic")
+    assert not _eligible_child("ibr_linked", "Sub-task")
     assert not _eligible_child("ibr_linked", "Feature Request")
     assert not _eligible_child("non_ibr", "Story")

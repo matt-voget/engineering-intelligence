@@ -105,6 +105,12 @@ class BuildCycleTimeQuery:
                     "are classified as non-IBR."
                 )
 
+            if include_children:
+                notes.append(
+                    "Group ibr_children lists IBR-linked child issues (sub-tasks excluded) "
+                    "measured individually, the population the Operations Portal reports; "
+                    "their parents remain in ibr_linked."
+                )
             visible_ids = team_issue_ids | board_issue_ids
             timelines = {
                 issue_id: timeline
@@ -168,9 +174,9 @@ class BuildCycleTimeQuery:
                         period_ended_at=ended,
                         top_status=_top_status(durations),
                         status_durations=durations,
-                        children=_children(
-                            issue_id, timelines, children_by_parent, depth=1
-                        ),
+                        children=[]
+                        if group == "ibr_children"
+                        else _children(issue_id, timelines, children_by_parent, depth=1),
                         rag=assess_rag(
                             teams_config.rag,
                             team_id=team.id,
@@ -208,16 +214,7 @@ class BuildCycleTimeQuery:
                     "The report date filter selects issues by their Done transition.",
                     "Only issues whose current Jira status is exactly Done are included.",
                     "Issues with a zero-day cycle are excluded.",
-                ]
-                + (
-                    [
-                        "Group ibr_children lists IBR-linked child issues measured "
-                        "individually (the population the Gravitee Operations Portal "
-                        "reports); their parents remain in ibr_linked."
-                    ]
-                    if include_children
-                    else []
-                ),
+                ],
             )
 
 
@@ -262,10 +259,16 @@ def _eligible_issue(classification: str, issue_type: str | None) -> bool:
     )
 
 
+SUBTASK_ISSUE_TYPES = {"sub-task", "subtask", "sub task"}
+
+
 def _eligible_child(classification: str, issue_type: str | None) -> bool:
-    """An IBR-linked issue that is not itself a parent type, measured on its own."""
-    return classification == "ibr_linked" and (
-        (issue_type or "").strip().casefold() not in PARENT_ISSUE_TYPES
+    """An IBR-linked story or bug (not a parent type, not a sub-task), measured on its own."""
+    kind = (issue_type or "").strip().casefold()
+    return (
+        classification == "ibr_linked"
+        and kind not in PARENT_ISSUE_TYPES
+        and kind not in SUBTASK_ISSUE_TYPES
     )
 
 
