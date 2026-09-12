@@ -62,6 +62,7 @@ class BuildCycleTimeQuery:
         snapshot_identifier: str,
         team_identifier: str,
         teams_config: TeamsConfig,
+        include_children: bool = False,
     ) -> BuildCycleTimeView:
         with self.sessions() as session:
             snapshot = DashboardQuery._snapshot(session, snapshot_identifier)
@@ -133,13 +134,20 @@ class BuildCycleTimeQuery:
                 "ibr_linked": [],
                 "non_ibr": [],
             }
+            if include_children:
+                grouped["ibr_children"] = []
             for issue_id in sorted(team_issue_ids):
                 timeline = timelines.get(issue_id)
                 if timeline is None:
                     continue
                 group = classification(issue_id)
                 if not _eligible_issue(group, timeline.version.issue_type_name):
-                    continue
+                    if not (
+                        include_children
+                        and _eligible_child(group, timeline.version.issue_type_name)
+                    ):
+                        continue
+                    group = "ibr_children"
                 if not _is_done_status(timeline.version.status_name):
                     continue
                 cycle = _cycle(timeline)
@@ -189,7 +197,7 @@ class BuildCycleTimeQuery:
                         classification=classification_name,
                         contributions=grouped[classification_name],
                     )
-                    for classification_name in ("ibr_linked", "non_ibr")
+                    for classification_name in grouped
                 ],
                 data_quality_notes=notes
                 + [
@@ -200,7 +208,16 @@ class BuildCycleTimeQuery:
                     "The report date filter selects issues by their Done transition.",
                     "Only issues whose current Jira status is exactly Done are included.",
                     "Issues with a zero-day cycle are excluded.",
-                ],
+                ]
+                + (
+                    [
+                        "Group ibr_children lists IBR-linked child issues measured "
+                        "individually (the population the Gravitee Operations Portal "
+                        "reports); their parents remain in ibr_linked."
+                    ]
+                    if include_children
+                    else []
+                ),
             )
 
 
@@ -242,6 +259,13 @@ def _timeline(
 def _eligible_issue(classification: str, issue_type: str | None) -> bool:
     return classification == "non_ibr" or (
         (issue_type or "").strip().casefold() in PARENT_ISSUE_TYPES
+    )
+
+
+def _eligible_child(classification: str, issue_type: str | None) -> bool:
+    """An IBR-linked issue that is not itself a parent type, measured on its own."""
+    return classification == "ibr_linked" and (
+        (issue_type or "").strip().casefold() not in PARENT_ISSUE_TYPES
     )
 
 

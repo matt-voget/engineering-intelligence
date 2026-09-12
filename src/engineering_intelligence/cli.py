@@ -1353,6 +1353,13 @@ def metrics_build_cycle(
         str,
         typer.Option("--format", help="Output format; currently json."),
     ] = "json",
+    include_children: Annotated[
+        bool,
+        typer.Option(
+            "--children/--no-children",
+            help="Also list IBR-linked child issues measured individually (group ibr_children).",
+        ),
+    ] = False,
     data_dir: DataDir = None,
 ) -> None:
     """Render IBR and non-IBR parent Build Cycle Time evidence."""
@@ -1365,6 +1372,7 @@ def metrics_build_cycle(
         snapshot,
         team,
         load_yaml_model(teams_config_path, TeamsConfig),
+        include_children=include_children,
     )
     typer.echo(view.model_dump_json(indent=2))
 

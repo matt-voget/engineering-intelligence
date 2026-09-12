@@ -83,3 +83,24 @@ def test_coding_boundary_uses_earliest_linked_commit_without_jira_logic() -> Non
         "earliest_linked_commit",
     )
     assert _coding_boundary([]) == (None, None)
+
+
+def test_attribution_author_mode_ignores_jira_links() -> None:
+    from engineering_intelligence.queries.github_pr_metrics import _attributed
+
+    assert _attributed("author", True, {"other team"}, {"devex"})
+    assert not _attributed("author", False, {"devex"}, {"devex"})
+
+
+def test_attribution_jira_team_mode_credits_the_jira_team_and_falls_back_to_author() -> None:
+    from engineering_intelligence.queries.github_pr_metrics import _attributed
+
+    # Linked issue names this team: counted regardless of author.
+    assert _attributed("jira-team", False, {"devex"}, {"devex"})
+    # Linked issue names another team: excluded even for a team author.
+    assert not _attributed("jira-team", True, {"foundations"}, {"devex"})
+    # No Jira team at all: the author's configured team decides.
+    assert _attributed("jira-team", True, set(), {"devex"})
+    assert not _attributed("jira-team", False, set(), {"devex"})
+    # Aliases are part of the team name set.
+    assert _attributed("jira-team", False, {"builder experience"}, {"bx", "builder experience"})

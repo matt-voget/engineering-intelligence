@@ -100,6 +100,13 @@ class GitHubConfig(BaseModel):
     token_env: str = "GITHUB_PAT"
     initial_lookback_days: int = Field(default=90, ge=1, le=3650)
     max_pull_requests_per_repository: int = Field(default=500, ge=1, le=5000)
+    # How a merged pull request is credited to a team in PR metrics.
+    #   author    — the PR author's configured github_login (default; the report contract).
+    #   jira-team — the Team field of the Jira issue named in the PR title/branch when one
+    #               exists, falling back to the author when the PR carries no Jira key.
+    #               This mirrors the Gravitee Operations Portal and exists for
+    #               reconciliation against it; see docs/notes/portal-comparison-2026-09.md.
+    attribution: Literal["author", "jira-team"] = "author"
     # Every run re-verifies at least this many days of pull-request history per
     # repository; the per-repository cap only limits records older than this window.
     min_refresh_window_days: int = Field(default=31, ge=1, le=365)

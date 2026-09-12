@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from engineering_intelligence.config import SourceConfig, TeamsConfig
 from engineering_intelligence.persistence.models import (
+    JiraGitHubRelationship,
+    JiraIssueVersion,
     GitHubPullRequest,
     GitHubPullRequestVersion,
     GitHubRepository,
@@ -107,6 +109,16 @@ class GitHubPullRequestMetricsQuery:
                     )
                 )
             )
+            attribution = source_config.github.attribution
+            team_names = {team.name.casefold(), *(alias.casefold() for alias in team.aliases)}
+            linked_teams: dict[str, set[str]] = {}
+            if attribution == "jira-team":
+                linked_teams = _linked_jira_teams(session)
+                candidate_pull_ids |= {
+                    pull_id
+                    for pull_id, names in linked_teams.items()
+                    if names & team_names
+                }
             pulls = (
                 session.scalars(
                     select(GitHubPullRequest).where(
@@ -133,8 +145,11 @@ class GitHubPullRequestMetricsQuery:
                     .order_by(GitHubPullRequestVersion.observed_at.desc())
                     .limit(1)
                 )
-                if version is None or not _author_in_scope(
-                    version.author_login, author_logins
+                if version is None or not _attributed(
+                    attribution,
+                    _author_in_scope(version.author_login, author_logins),
+                    linked_teams.get(pull.id, set()),
+                    team_names,
                 ):
                     continue
                 reviews = list(
@@ -202,6 +217,11 @@ class GitHubPullRequestMetricsQuery:
                 (
                     "PR authors must match an active configured GitHub identity for "
                     "the selected team at the snapshot date."
+                    if attribution == "author"
+                    else "Attribution mode jira-team: a PR is credited to the Team field "
+                    "of the Jira issue named in it; PRs with no Jira key fall back to "
+                    "the author's configured team, and PRs whose Jira team is another "
+                    "team are excluded even when a team member authored them."
                 ),
                 (
                     "All configured repositories are searched; repository-to-team "
@@ -266,3 +286,44 @@ def _person(login: str | None, identity: dict[str, str]) -> GitHubPersonRef | No
 
 def _author_in_scope(login: str | None, author_logins: set[str]) -> bool:
     return bool(login and login.casefold() in author_logins)
+
+
+def _attributed(
+    mode: str,
+    author_in_scope: bool,
+    linked_team_names: set[str],
+    team_names: set[str],
+) -> bool:
+    """Decide whether a pull request counts for the selected team.
+
+    ``author`` mode credits the author's configured team only. ``jira-team`` mode
+    credits the team named by the PR's Jira issue(s) when any is linked, and falls
+    back to the author only for PRs with no Jira team at all.
+    """
+    if mode != "jira-team":
+        return author_in_scope
+    if linked_team_names:
+        return bool(linked_team_names & team_names)
+    return author_in_scope
+
+
+def _linked_jira_teams(session: Session) -> dict[str, set[str]]:
+    """Map pull request id -> casefolded Team-field names of its linked Jira issues."""
+    latest_team: dict[str, str | None] = {}
+    for issue_id, team_name in session.execute(
+        select(JiraIssueVersion.issue_id, JiraIssueVersion.team_name).order_by(
+            JiraIssueVersion.issue_id, JiraIssueVersion.observed_at
+        )
+    ):
+        latest_team[issue_id] = team_name
+    result: dict[str, set[str]] = {}
+    for pull_id, issue_id in session.execute(
+        select(
+            JiraGitHubRelationship.github_record_id,
+            JiraGitHubRelationship.jira_issue_id,
+        ).where(JiraGitHubRelationship.github_record_type == "pull_request")
+    ):
+        name = latest_team.get(issue_id)
+        if name:
+            result.setdefault(pull_id, set()).add(name.casefold())
+    return result

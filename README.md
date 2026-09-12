@@ -114,6 +114,16 @@ defines:
 - GitHub repositories and their explicit team mappings
 - Environment-variable names used for credentials
 
+The GitHub section also accepts `attribution: author | jira-team` (default `author`).
+`jira-team` credits a merged PR to the Team field of the Jira issue named in it and falls
+back to the author only when the PR has no Jira key; it exists to reconcile against the
+Gravitee Operations Portal, which attributes the same way. `max_pull_requests_per_repository`
+bounds how far back one refresh walks a busy repository; raise it (up to 5000) when the
+oldest merged PR in a refreshed repository is later than `initial_lookback_days` ago.
+`engintel metrics build-cycle --children` adds an `ibr_children` group listing IBR-linked
+child issues measured individually. Known Portal-vs-EI deviations are recorded in
+`docs/notes/portal-comparison-2026-09.md`.
+
 The teams file defines stable team/person IDs, aliases, membership dates, and Jira and
 GitHub identities. Secondary memberships are represented by putting the same stable
 person ID in more than one team. Keep the configuration private if identity mappings

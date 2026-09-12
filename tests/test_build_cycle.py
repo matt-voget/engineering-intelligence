@@ -136,3 +136,13 @@ def test_workflow_cycle_metrics_ignores_phases_absent_from_issue_type_workflow()
 
     assert result is not None
     assert result.skipped_phases == []
+
+
+def test_eligible_child_is_an_ibr_linked_non_parent_issue() -> None:
+    from engineering_intelligence.queries.build_cycle import _eligible_child
+
+    assert _eligible_child("ibr_linked", "Story")
+    assert _eligible_child("ibr_linked", "Private Bug")
+    assert not _eligible_child("ibr_linked", "Epic")
+    assert not _eligible_child("ibr_linked", "Feature Request")
+    assert not _eligible_child("non_ibr", "Story")
